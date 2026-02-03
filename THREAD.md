@@ -11,9 +11,18 @@
 - 預設步驟間隔：2 秒
 - 系統目標：輔助建立/載入 pyautogui 自動點擊腳本
 
+## 已確認規格（v0）
+- 影像辨識：使用 OpenCV（pyautogui confidence）
+- Windows scaling：固定
+- 不使用 win32 API 切視窗，只靠影像辨識
+- 半自動鍵盤輸入：錄 click；type/hotkey 由使用者在 editor 內插入
+- 錄製控制鍵：F9 toggle 暫停/恢復（不寫入 YAML）
+- 暫停狀態需在編輯器 UI 顯示「PAUSED」
+- click 預覽：以 click 中心裁 30×30 px（只做提示，不做定位）
+- 需要記錄：click button + double click
+- 錄到使用者按 Stop 為止
+
 ## 待確認問題
-1) 你希望 anchor 圖的比對方式：`pyautogui.locateOnScreen` (Pillow) 還是 OpenCV (`confidence` 參數)？
-2) 多螢幕/縮放：Windows 顯示縮放比例 (100%/125%/150%) 是否固定？
-3) 目標視窗是否需要先「bring to front」？是否允許用 win32 API 依視窗標題切換焦點？
-4) 文字輸入：需要支援中文/剪貼簿貼上（Ctrl+V）嗎？
-5) 失敗策略：找不到 anchor 圖要不要 retry、timeout、多張備援 anchor？
+1) 專案輸出目錄結構是否採用：project/flow.yaml + anchors/ + previews/？
+2) type 文字輸入是否需要支援「貼上模式」（clipboard Ctrl+V）以減少輸入法差異？
+3) hotkey/keypress 需要支援哪些按鍵集合（enter/tab/esc/功能鍵）？
