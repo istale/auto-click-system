@@ -1,0 +1,35 @@
+version: 0
+meta:
+  name: 自動點擊系統
+  created_utc: "2026-02-03T00:00:00Z"
+  default_delay_s: 2
+global:
+  confidence: 0.9
+  grayscale: true
+flows:
+  - id: flow1
+    title: 範例流程
+    anchor:
+      image: anchors/flow1_anchor.png
+      click_in_image:
+        x: 120
+        y: 35
+      capture_rect:
+        x: 100
+        y: 100
+        w: 300
+        h: 120
+    steps:
+      - action: click
+        offset: {x: 300, y: 120}
+        button: left
+        clicks: 1
+        delay_s: 2
+        preview: previews/flow1_step0001.png
+      - action: type
+        text: hello
+        interval_s: 0.02
+        delay_s: 2
+      - action: hotkey
+        keys: [ctrl, s]
+        delay_s: 2
