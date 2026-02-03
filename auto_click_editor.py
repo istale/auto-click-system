@@ -65,9 +65,23 @@ from PySide6.QtWidgets import (
 )
 
 # Screenshot / input hooks
-import pyautogui
-from PIL import Image
-from pynput import keyboard, mouse
+# 注意：在 headless / 無 DISPLAY 環境下，pyautogui/pynput 可能無法使用。
+# 為了讓編輯器至少能啟動（例如用於截圖/文件展示），這裡採用可選匯入。
+try:
+    import pyautogui  # type: ignore
+except Exception:  # pragma: no cover
+    pyautogui = None
+
+try:
+    from PIL import Image  # type: ignore
+except Exception:  # pragma: no cover
+    Image = None
+
+try:
+    from pynput import keyboard, mouse  # type: ignore
+except Exception:  # pragma: no cover
+    keyboard = None
+    mouse = None
 
 
 DEFAULT_DELAY_S = 2
@@ -94,8 +108,13 @@ def clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
-def capture_preview_30x30(x: int, y: int) -> Image.Image:
-    # 以 click 為中心裁 30x30
+def capture_preview_30x30(x: int, y: int):
+    """以 click 為中心裁 30×30。
+
+    需要 pyautogui（與可用的桌面 DISPLAY）。
+    """
+    if pyautogui is None:
+        raise RuntimeError("pyautogui not available (likely missing deps or DISPLAY)")
     left = x - 15
     top = y - 15
     # pyautogui.screenshot 的 region 是 (left, top, width, height)
@@ -475,6 +494,9 @@ class AutoClickEditor(QMainWindow):
 
         x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
 
+        if pyautogui is None:
+            QMessageBox.warning(self, "無法截圖", "pyautogui 無法使用（可能缺少套件或目前環境無桌面 DISPLAY）")
+            return
         # screenshot
         img = pyautogui.screenshot(region=(x, y, w, h))
 
@@ -606,6 +628,14 @@ class AutoClickEditor(QMainWindow):
     # ----------------------- listeners -----------------------
 
     def _ensure_listeners_running(self):
+        if mouse is None or keyboard is None:
+            QMessageBox.warning(
+                self,
+                "無法啟動全域監聽",
+                "pynput 無法使用（可能缺少套件或目前環境無桌面/無權限）。\n"
+                "可先用此編輯器檢視/編輯 YAML，但錄製功能需要在可用的桌面環境執行。",
+            )
+            return
         if self._mouse_listener is None:
             self._mouse_listener = mouse.Listener(on_click=self._on_click)
             self._mouse_listener.start()
@@ -614,6 +644,8 @@ class AutoClickEditor(QMainWindow):
             self._kb_listener.start()
 
     def _on_key_press(self, key):
+        if keyboard is None:
+            return
         # F9 toggle pause/resume (only meaningful while recording)
         try:
             if key == keyboard.Key.f9:
@@ -665,10 +697,11 @@ class AutoClickEditor(QMainWindow):
         offset = {"x": bx - ax, "y": by - ay}
 
         btn_name = "left"
-        if button == mouse.Button.right:
-            btn_name = "right"
-        elif button == mouse.Button.middle:
-            btn_name = "middle"
+        if mouse is not None:
+            if button == mouse.Button.right:
+                btn_name = "right"
+            elif button == mouse.Button.middle:
+                btn_name = "middle"
 
         # pynput doesn't directly tell double click; PoC uses click_count=1.
         # We'll allow user to edit clicks in table later.
