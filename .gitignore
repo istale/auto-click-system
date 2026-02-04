@@ -1,0 +1,9 @@
+
+# Local Python env / cache
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local artifacts
+editor_screenshot.png
