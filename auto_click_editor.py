@@ -87,6 +87,8 @@ except Exception:  # pragma: no cover
 DEFAULT_DELAY_S = 2
 DEFAULT_CONFIDENCE = 0.9
 DEFAULT_GRAYSCALE = True
+DEFAULT_DOUBLE_CLICK_THRESHOLD_MS = 300  # 常見雙擊判定門檻
+DEFAULT_DOUBLE_CLICK_DISTANCE_PX = 4     # 避免把不同位置的 click 合併
 
 
 def now_utc_iso() -> str:
@@ -227,6 +229,12 @@ class AutoClickEditor(QMainWindow):
         self.expect_anchor_click = False
         self.anchor_click_xy: Optional[Dict[str, int]] = None
 
+        # double click detection (editor runtime only; 不寫入 YAML)
+        self.double_click_threshold_ms = DEFAULT_DOUBLE_CLICK_THRESHOLD_MS
+        self._last_click_ts: Optional[float] = None
+        self._last_click_button: Optional[str] = None
+        self._last_click_xy: Optional[Dict[str, int]] = None
+
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
         self._kb_listener: Optional[keyboard.Listener] = None
@@ -297,10 +305,21 @@ class AutoClickEditor(QMainWindow):
         self.btn_set_anchor_click = QPushButton("設定錨點基準點（點一下錨點）")
         self.btn_record = QPushButton("開始錄製")
         self.btn_stop = QPushButton("停止")
+
+        self.lbl_double_click = QLabel("雙擊門檻(ms)")
+        self.spin_double_click = QSpinBox()
+        self.spin_double_click.setRange(50, 1500)
+        self.spin_double_click.setSingleStep(50)
+        self.spin_double_click.setValue(self.double_click_threshold_ms)
+        self.spin_double_click.valueChanged.connect(self.on_double_click_threshold_changed)
+
         row3.addWidget(self.btn_capture_anchor)
         row3.addWidget(self.btn_set_anchor_click)
         row3.addWidget(self.btn_record)
         row3.addWidget(self.btn_stop)
+        row3.addStretch(1)
+        row3.addWidget(self.lbl_double_click)
+        row3.addWidget(self.spin_double_click)
         layout.addLayout(row3)
 
         self.btn_capture_anchor.clicked.connect(self.on_capture_anchor)
@@ -325,17 +344,25 @@ class AutoClickEditor(QMainWindow):
             "delay_s",
             "preview",
         ])
+        # 允許在表格內直接編輯 clicks / delay_s
+        self.steps_table.itemChanged.connect(self.on_steps_item_changed)
         layout.addWidget(self.steps_table)
 
         row4 = QHBoxLayout()
+        self.btn_step_up = QPushButton("上移")
+        self.btn_step_down = QPushButton("下移")
         self.btn_del_step = QPushButton("刪除選取步驟")
         self.btn_insert_type = QPushButton("插入文字輸入")
         self.btn_insert_hotkey = QPushButton("插入快捷鍵")
+        row4.addWidget(self.btn_step_up)
+        row4.addWidget(self.btn_step_down)
         row4.addWidget(self.btn_del_step)
         row4.addWidget(self.btn_insert_type)
         row4.addWidget(self.btn_insert_hotkey)
         layout.addLayout(row4)
 
+        self.btn_step_up.clicked.connect(self.on_step_up)
+        self.btn_step_down.clicked.connect(self.on_step_down)
         self.btn_del_step.clicked.connect(self.on_del_step)
         self.btn_insert_type.clicked.connect(self.on_insert_type)
         self.btn_insert_hotkey.clicked.connect(self.on_insert_hotkey)
@@ -544,6 +571,9 @@ class AutoClickEditor(QMainWindow):
 
         self.recording = True
         self.paused = False
+        self._last_click_ts = None
+        self._last_click_button = None
+        self._last_click_xy = None
         self._ensure_listeners_running()
         self._show_message("開始錄製：點擊將被記錄；按 F9 暫停/恢復；按『停止』結束")
         self._update_ui_state()
@@ -552,8 +582,15 @@ class AutoClickEditor(QMainWindow):
         self.recording = False
         self.paused = False
         self.expect_anchor_click = False
+        self._last_click_ts = None
+        self._last_click_button = None
+        self._last_click_xy = None
         self._show_message("已停止")
         self._update_ui_state()
+
+    def on_double_click_threshold_changed(self, v: int):
+        # editor runtime only; 不寫入 YAML
+        self.double_click_threshold_ms = int(v)
 
     # ----------------------- steps editing -----------------------
 
@@ -567,6 +604,26 @@ class AutoClickEditor(QMainWindow):
         f = self._ensure_flow(self.current_flow_id)
         f["steps"] = steps
 
+    def on_step_up(self):
+        row = self.steps_table.currentRow()
+        if row <= 0:
+            return
+        steps = self._current_steps()
+        if row >= len(steps):
+            return
+        steps[row - 1], steps[row] = steps[row], steps[row - 1]
+        self._set_current_steps(steps)
+        self._refresh_steps_table(select_row=row - 1)
+
+    def on_step_down(self):
+        row = self.steps_table.currentRow()
+        steps = self._current_steps()
+        if row < 0 or row >= len(steps) - 1:
+            return
+        steps[row + 1], steps[row] = steps[row], steps[row + 1]
+        self._set_current_steps(steps)
+        self._refresh_steps_table(select_row=row + 1)
+
     def on_del_step(self):
         row = self.steps_table.currentRow()
         if row < 0:
@@ -576,7 +633,7 @@ class AutoClickEditor(QMainWindow):
             return
         steps.pop(row)
         self._set_current_steps(steps)
-        self._refresh_steps_table()
+        self._refresh_steps_table(select_row=min(row, len(steps) - 1))
 
     def on_insert_type(self):
         if not self._require_flow_selected():
@@ -603,27 +660,75 @@ class AutoClickEditor(QMainWindow):
         self._set_current_steps(steps)
         self._refresh_steps_table()
 
-    def _refresh_steps_table(self):
+    def _mk_item(self, text: str, editable: bool) -> QTableWidgetItem:
+        it = QTableWidgetItem(text)
+        flags = it.flags()
+        if editable:
+            it.setFlags(flags | Qt.ItemFlag.ItemIsEditable)
+        else:
+            it.setFlags(flags & ~Qt.ItemFlag.ItemIsEditable)
+        return it
+
+    def _refresh_steps_table(self, select_row: Optional[int] = None):
+        self.steps_table.blockSignals(True)
         self.steps_table.setRowCount(0)
         steps = self._current_steps()
         for i, st in enumerate(steps):
             self.steps_table.insertRow(i)
-            self.steps_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            self.steps_table.setItem(i, 1, QTableWidgetItem(str(st.get("action"))))
+            self.steps_table.setItem(i, 0, self._mk_item(str(i + 1), editable=False))
+            self.steps_table.setItem(i, 1, self._mk_item(str(st.get("action")), editable=False))
 
             ox = ""
             oy = ""
             if isinstance(st.get("offset"), dict):
                 ox = str(st["offset"].get("x", ""))
                 oy = str(st["offset"].get("y", ""))
-            self.steps_table.setItem(i, 2, QTableWidgetItem(ox))
-            self.steps_table.setItem(i, 3, QTableWidgetItem(oy))
-            self.steps_table.setItem(i, 4, QTableWidgetItem(str(st.get("button", ""))))
-            self.steps_table.setItem(i, 5, QTableWidgetItem(str(st.get("clicks", ""))))
-            self.steps_table.setItem(i, 6, QTableWidgetItem(str(st.get("delay_s", ""))))
-            self.steps_table.setItem(i, 7, QTableWidgetItem(str(st.get("preview", ""))))
+            self.steps_table.setItem(i, 2, self._mk_item(ox, editable=False))
+            self.steps_table.setItem(i, 3, self._mk_item(oy, editable=False))
+            self.steps_table.setItem(i, 4, self._mk_item(str(st.get("button", "")), editable=False))
+
+            # clicks / delay_s：允許直接編輯
+            self.steps_table.setItem(i, 5, self._mk_item(str(st.get("clicks", "")), editable=True))
+            self.steps_table.setItem(i, 6, self._mk_item(str(st.get("delay_s", "")), editable=True))
+
+            self.steps_table.setItem(i, 7, self._mk_item(str(st.get("preview", "")), editable=False))
 
         self.steps_table.resizeColumnsToContents()
+        self.steps_table.blockSignals(False)
+
+        if select_row is not None and 0 <= select_row < self.steps_table.rowCount():
+            self.steps_table.setCurrentCell(select_row, 0)
+
+    def on_steps_item_changed(self, item: QTableWidgetItem):
+        # 只處理 clicks / delay_s 欄位
+        row = item.row()
+        col = item.column()
+        steps = self._current_steps()
+        if row < 0 or row >= len(steps):
+            return
+
+        st = steps[row]
+        try:
+            if col == 5:  # clicks
+                v = int(item.text().strip())
+                if v not in (1, 2):
+                    raise ValueError("clicks 只支援 1 或 2")
+                st["clicks"] = v
+            elif col == 6:  # delay_s
+                v = int(item.text().strip())
+                if v < 0 or v > 3600:
+                    raise ValueError("delay_s 需在 0..3600")
+                st["delay_s"] = v
+            else:
+                return
+        except Exception as e:
+            # 還原顯示
+            self._show_message(f"欄位格式錯誤：{e}")
+            self._refresh_steps_table(select_row=row)
+            return
+
+        steps[row] = st
+        self._set_current_steps(steps)
 
     # ----------------------- listeners -----------------------
 
@@ -703,8 +808,7 @@ class AutoClickEditor(QMainWindow):
             elif button == mouse.Button.middle:
                 btn_name = "middle"
 
-        # pynput doesn't directly tell double click; PoC uses click_count=1.
-        # We'll allow user to edit clicks in table later.
+        # 雙擊偵測：短時間內同一按鍵的連點 -> 合併成同一個 step.clicks=2
         clicks = 1
 
         # preview
@@ -733,11 +837,43 @@ class AutoClickEditor(QMainWindow):
             "preview": prev_rel,
         }
 
-        steps.append(step)
+        # 嘗試合併成雙擊（只合併到上一個 click step，且同按鍵、距離近、時間門檻內）
+        t = time.time()
+        merged = False
+        if steps:
+            prev = steps[-1]
+            if (
+                isinstance(prev, dict)
+                and prev.get("action") == "click"
+                and str(prev.get("button", "")) == btn_name
+                and isinstance(prev.get("offset"), dict)
+                and isinstance(step.get("offset"), dict)
+            ):
+                last_ts = self._last_click_ts
+                last_xy = self._last_click_xy
+                if last_ts is not None and last_xy is not None:
+                    dt_ms = (t - last_ts) * 1000.0
+                    dx = abs(int(x) - int(last_xy.get("x", x)))
+                    dy = abs(int(y) - int(last_xy.get("y", y)))
+                    if dt_ms <= float(self.double_click_threshold_ms) and dx <= DEFAULT_DOUBLE_CLICK_DISTANCE_PX and dy <= DEFAULT_DOUBLE_CLICK_DISTANCE_PX:
+                        prev_clicks = int(prev.get("clicks") or 1)
+                        if prev_clicks < 2:
+                            prev["clicks"] = 2
+                            steps[-1] = prev
+                            merged = True
+
+        if not merged:
+            steps.append(step)
+
         f["steps"] = steps
 
+        # 更新 last click（用於下一次雙擊判定）
+        self._last_click_ts = t
+        self._last_click_button = btn_name
+        self._last_click_xy = {"x": int(x), "y": int(y)}
+
         # UI 更新
-        self._refresh_steps_table()
+        self._refresh_steps_table(select_row=len(steps) - 1)
         self._update_ui_state()
 
     # ----------------------- ui helpers -----------------------

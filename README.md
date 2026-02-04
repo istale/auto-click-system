@@ -40,5 +40,26 @@ py auto_click_editor.py
 - F9 toggle 暫停/恢復（編輯器顯示 PAUSED；不寫入 YAML）
 - 半自動鍵盤步驟：在編輯器內插入 type / hotkey
 
+## YAML → pyautogui script 產生器
+- `generate_pyautogui.py`
+
+### Dry-run（只印解析結果/步驟）
+```powershell
+py generate_pyautogui.py --project EXAMPLE_PROJECT --flow flow1 --dry-run
+```
+
+### 產生可執行腳本
+```powershell
+py generate_pyautogui.py --project EXAMPLE_PROJECT --flow flow1 --out run_flow1.py
+```
+
+> 注意：若要在 locateOnScreen 使用 confidence，需要 OpenCV。
+> 如不想依賴 OpenCV，可加 `--no-confidence`。
+
+### 執行產生的腳本
+```powershell
+py EXAMPLE_PROJECT\run_flow1.py --project EXAMPLE_PROJECT
+```
+
 ## 範例流程包
 - `EXAMPLE_PROJECT/`
