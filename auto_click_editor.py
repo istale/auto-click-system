@@ -1020,21 +1020,31 @@ class AutoClickEditor(QMainWindow):
         prev_name = f"{self.current_flow_id}_step{step_idx:04d}.png"
         prev_abs = os.path.join(previews_dir, prev_name)
         try:
-            # Prefer: crop preview from a fresh full screenshot (pixel space) to avoid DPI/RDP mismatch.
+            # Preview should be based on recorded click coordinates (pixel space):
+            # capture fullscreen, then crop 30x30 around (bx,by).
             prev_rel = None
-            if Image is not None and cv2 is not None and np is not None:
-                full2, _, _ = capture_fullscreen_bgr()
-                left = bx - 15
-                top = by - 15
-                crop = full2[top : top + 30, left : left + 30]
-                rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                img_prev = Image.fromarray(rgb)
-                img_prev.save(prev_abs)
-                prev_rel = os.path.join("previews", prev_name)
-            else:
-                img_prev = capture_preview_30x30(bx, by)
-                img_prev.save(prev_abs)
-                prev_rel = os.path.join("previews", prev_name)
+            full2, fw, fh = capture_fullscreen_bgr()
+
+            left = clamp(bx - 15, 0, int(fw) - 1)
+            top = clamp(by - 15, 0, int(fh) - 1)
+            right = clamp(left + 30, 1, int(fw))
+            bottom = clamp(top + 30, 1, int(fh))
+
+            crop = full2[top:bottom, left:right]
+            # If near edges, pad to 30x30 for consistency
+            if crop.shape[0] != 30 or crop.shape[1] != 30:
+                crop = cv2.copyMakeBorder(
+                    crop,
+                    top=0,
+                    bottom=30 - crop.shape[0],
+                    left=0,
+                    right=30 - crop.shape[1],
+                    borderType=cv2.BORDER_CONSTANT,
+                    value=(0, 0, 0),
+                )
+
+            cv2.imwrite(prev_abs, crop)
+            prev_rel = os.path.join("previews", prev_name)
         except Exception:
             prev_rel = None
 
