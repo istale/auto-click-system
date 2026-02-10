@@ -340,6 +340,11 @@ class AutoClickEditor(QMainWindow):
         self.expect_anchor_click = False
         self.anchor_click_xy: Optional[Dict[str, int]] = None
 
+        # DPI / scaling bridge between listener coordinates and screenshot pixels.
+        # On Windows (esp. RDP + 125% scaling), pynput coordinates and screenshot pixels can differ.
+        self._coord_scale_x: float = 1.0
+        self._coord_scale_y: float = 1.0
+
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
         self._kb_listener: Optional[keyboard.Listener] = None
@@ -615,11 +620,20 @@ class AutoClickEditor(QMainWindow):
         full_img = None
         if pyautogui is not None and Image is not None:
             try:
-                full_img = pyautogui.screenshot()  # PIL Image
+                full_img = pyautogui.screenshot()  # PIL Image (pixel coordinates)
                 bg_pm = pil_to_qpixmap(full_img)
+
+                # Compute coordinate scale between Qt virtual desktop (logical) and screenshot pixels.
+                # This matters on Windows DPI scaling (e.g. 125%).
+                v = QGuiApplication.primaryScreen().virtualGeometry()
+                if v.width() > 0 and v.height() > 0:
+                    self._coord_scale_x = float(full_img.size[0]) / float(v.width())
+                    self._coord_scale_y = float(full_img.size[1]) / float(v.height())
             except Exception:
                 full_img = None
                 bg_pm = None
+                self._coord_scale_x = 1.0
+                self._coord_scale_y = 1.0
 
         self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
         selector = ScreenRegionSelector(bg=bg_pm)
@@ -652,7 +666,14 @@ class AutoClickEditor(QMainWindow):
         # screenshot: prefer cropping from the full screenshot (if available)
         if full_img is not None and Image is not None:
             try:
-                img = full_img.crop((x, y, x + w, y + h))
+                # rect is in Qt logical coords; convert to screenshot pixel coords
+                px = int(round(x * self._coord_scale_x))
+                py = int(round(y * self._coord_scale_y))
+                pw = int(round(w * self._coord_scale_x))
+                ph = int(round(h * self._coord_scale_y))
+                img = full_img.crop((px, py, px + pw, py + ph))
+                # also update x/y/w/h to pixel space for capture_rect consistency
+                x, y, w, h = px, py, pw, ph
             except Exception:
                 img = None
         else:
@@ -677,7 +698,13 @@ class AutoClickEditor(QMainWindow):
         f["anchor"] = {
             "image": os.path.join("anchors", out_name),
             "click_in_image": {"x": w // 2, "y": h // 2},
+            # capture_rect stored in screenshot pixel coordinates
             "capture_rect": {"x": x, "y": y, "w": w, "h": h},
+            # UI-only: record DPI scale used during capture for later coordinate conversions
+            "_editor": {
+                "coord_scale_x": self._coord_scale_x,
+                "coord_scale_y": self._coord_scale_y,
+            },
         }
         self._show_message(f"已截取錨點圖：{safe_relpath(out_abs, self.project_dir)}；下一步請設定錨點基準點")
         self._update_ui_state()
@@ -890,18 +917,24 @@ class AutoClickEditor(QMainWindow):
             if isinstance(anch, dict) and isinstance(anch.get("capture_rect"), dict):
                 r = anch["capture_rect"]
                 rx, ry, rw, rh = int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])
-                if not (rx <= x <= rx + rw and ry <= y <= ry + rh):
+
+                # Convert listener coords (likely logical) -> screenshot pixel coords
+                px = int(round(x * self._coord_scale_x))
+                py = int(round(y * self._coord_scale_y))
+
+                if not (rx <= px <= rx + rw and ry <= py <= ry + rh):
                     self._show_message("你點的位置不在錨點截圖範圍內，請再點一次錨點。")
                     return
 
-                self.anchor_click_xy = {"x": int(x), "y": int(y)}
-                anch["click_in_image"] = {"x": int(x - rx), "y": int(y - ry)}
+                # Store anchor_click_xy in pixel coordinates to keep consistent with offsets/capture_rect
+                self.anchor_click_xy = {"x": int(px), "y": int(py)}
+                anch["click_in_image"] = {"x": int(px - rx), "y": int(py - ry)}
                 self.expect_anchor_click = False
                 self._show_message("已設定錨點基準點（anchor_click_xy）")
                 self._show_step_log()
                 try:
                     self.step_log.append_line(
-                        f"[{now_utc_iso()}] anchor_click_xy=({int(x)},{int(y)}) click_in_image=({int(x-rx)},{int(y-ry)})"
+                        f"[{now_utc_iso()}] anchor_click_xy=({int(px)},{int(py)}) click_in_image=({int(px-rx)},{int(py-ry)})"
                     )
                 except Exception:
                     pass
@@ -918,8 +951,9 @@ class AutoClickEditor(QMainWindow):
             return
 
         # build step
-        bx = int(x)
-        by = int(y)
+        # Convert listener coords (likely logical) -> screenshot pixel coords
+        bx = int(round(x * self._coord_scale_x))
+        by = int(round(y * self._coord_scale_y))
         ax = int(self.anchor_click_xy["x"])
         ay = int(self.anchor_click_xy["y"])
 
@@ -938,9 +972,19 @@ class AutoClickEditor(QMainWindow):
         prev_name = f"{self.current_flow_id}_step{step_idx:04d}.png"
         prev_abs = os.path.join(previews_dir, prev_name)
         try:
-            img = capture_preview_30x30(bx, by)
-            img.save(prev_abs)
-            prev_rel = os.path.join("previews", prev_name)
+            # Prefer: crop preview from a fresh full screenshot (pixel space) to avoid DPI/RDP mismatch.
+            prev_rel = None
+            if pyautogui is not None and Image is not None:
+                full2 = pyautogui.screenshot()
+                left = bx - 15
+                top = by - 15
+                img_prev = full2.crop((left, top, left + 30, top + 30))
+                img_prev.save(prev_abs)
+                prev_rel = os.path.join("previews", prev_name)
+            else:
+                img_prev = capture_preview_30x30(bx, by)
+                img_prev.save(prev_abs)
+                prev_rel = os.path.join("previews", prev_name)
         except Exception:
             prev_rel = None
 
