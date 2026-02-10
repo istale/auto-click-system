@@ -328,6 +328,7 @@ class UiEvents(QObject):
     """
 
     sig_f9 = Signal()
+    sig_f10 = Signal()
     sig_click = Signal(int, int, str, bool)  # x, y, button_name, pressed
 
 
@@ -410,6 +411,7 @@ class AutoClickEditor(QMainWindow):
         # UI events bridge (marshal listener thread -> GUI thread)
         self._events = UiEvents()
         self._events.sig_f9.connect(self._on_f9_gui)
+        self._events.sig_f10.connect(self._on_f10_gui)
         self._events.sig_click.connect(self._on_click_gui)
 
         # step log window (small always-on-top)
@@ -943,10 +945,12 @@ class AutoClickEditor(QMainWindow):
     def _on_key_press(self, key):
         if keyboard is None:
             return
-        # F9 toggle pause/resume
+        # F9 toggle pause/resume; F10 stop recording
         try:
             if key == keyboard.Key.f9:
                 self._events.sig_f9.emit()
+            elif key == keyboard.Key.f10:
+                self._events.sig_f10.emit()
         except Exception:
             pass
 
@@ -991,6 +995,18 @@ class AutoClickEditor(QMainWindow):
         except Exception:
             pass
         self._update_ui_state()
+
+    @Slot()
+    def _on_f10_gui(self):
+        # Stop recording (hotkey)
+        if not self.recording and not self.expect_anchor_click:
+            return
+        try:
+            self._show_step_log()
+            self.step_log.append_line(f"[{now_utc_iso()}] STOP (F10)")
+        except Exception:
+            pass
+        self.on_stop()
 
     @Slot(int, int, str, bool)
     def _on_click_gui(self, x: int, y: int, btn_name: str, pressed: bool):
