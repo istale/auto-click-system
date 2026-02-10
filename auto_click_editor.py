@@ -1051,12 +1051,18 @@ class AutoClickEditor(QMainWindow):
                 iy = clamp(int(py - ry), 0, max(0, rh - 1))
                 anch["click_in_image"] = {"x": ix, "y": iy}
                 self.expect_anchor_click = False
-                self._show_message("已設定錨點基準點（anchor_click_xy）")
+
+                # Auto-start recording after anchor reference point is set.
+                self.recording = True
+                self.paused = False
+
+                self._show_message("已設定錨點基準點，開始錄製（F9 暫停/恢復；F10/停止 結束）")
                 self._show_step_log()
                 try:
                     self.step_log.append_line(
                         f"[{now_utc_iso()}] anchor_click_xy=({int(px)},{int(py)}) click_in_image=({ix},{iy})"
                     )
+                    self.step_log.append_line(f"[{now_utc_iso()}] REC start (auto)")
                 except Exception:
                     pass
                 self._update_ui_state()
@@ -1097,23 +1103,39 @@ class AutoClickEditor(QMainWindow):
             prev_rel = None
             full2, fw, fh = capture_fullscreen_bgr()
 
-            left = clamp(bx - PREVIEW_HALF, 0, int(fw) - 1)
-            top = clamp(by - PREVIEW_HALF, 0, int(fh) - 1)
-            right = clamp(left + PREVIEW_SIZE, 1, int(fw))
-            bottom = clamp(top + PREVIEW_SIZE, 1, int(fh))
+            # Desired window in pixel coords
+            left0 = bx - PREVIEW_HALF
+            top0 = by - PREVIEW_HALF
+            right0 = left0 + PREVIEW_SIZE
+            bottom0 = top0 + PREVIEW_SIZE
+
+            # Compute padding (to keep click centered even near edges)
+            pad_left = max(0, -left0)
+            pad_top = max(0, -top0)
+            pad_right = max(0, right0 - int(fw))
+            pad_bottom = max(0, bottom0 - int(fh))
+
+            # Clamp crop region to screen
+            left = clamp(left0, 0, int(fw))
+            top = clamp(top0, 0, int(fh))
+            right = clamp(right0, 0, int(fw))
+            bottom = clamp(bottom0, 0, int(fh))
 
             crop = full2[top:bottom, left:right]
-            # If near edges, pad to PREVIEW_SIZE for consistency
-            if crop.shape[0] != PREVIEW_SIZE or crop.shape[1] != PREVIEW_SIZE:
+            if pad_left or pad_top or pad_right or pad_bottom:
                 crop = cv2.copyMakeBorder(
                     crop,
-                    top=0,
-                    bottom=PREVIEW_SIZE - crop.shape[0],
-                    left=0,
-                    right=PREVIEW_SIZE - crop.shape[1],
+                    top=pad_top,
+                    bottom=pad_bottom,
+                    left=pad_left,
+                    right=pad_right,
                     borderType=cv2.BORDER_CONSTANT,
                     value=(0, 0, 0),
                 )
+
+            # Safety: enforce exact size
+            if crop.shape[0] != PREVIEW_SIZE or crop.shape[1] != PREVIEW_SIZE:
+                crop = cv2.resize(crop, (PREVIEW_SIZE, PREVIEW_SIZE), interpolation=cv2.INTER_NEAREST)
 
             cv2.imwrite(prev_abs, crop)
             prev_rel = os.path.join("previews", prev_name)
