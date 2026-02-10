@@ -532,7 +532,6 @@ class AutoClickEditor(QMainWindow):
         self.btn_record.clicked.connect(self.on_record)
         self.btn_stop.clicked.connect(self.on_stop)
         self.chk_step_log.toggled.connect(self._on_toggle_step_log)
-        self.spin_preview_display.valueChanged.connect(self._on_preview_display_size_changed)
 
         # status
         self.lbl_status = QLabel("狀態：idle")
@@ -546,6 +545,7 @@ class AutoClickEditor(QMainWindow):
         self.spin_preview_display.setRange(60, 400)
         self.spin_preview_display.setSingleStep(10)
         self.spin_preview_display.setValue(DEFAULT_PREVIEW_DISPLAY_SIZE)
+        self.spin_preview_display.valueChanged.connect(self._on_preview_display_size_changed)
         row_ps.addWidget(self.spin_preview_display)
         row_ps.addStretch(1)
         layout.addLayout(row_ps)
