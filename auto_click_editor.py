@@ -45,7 +45,7 @@ import yaml
 
 # GUI
 from PySide6.QtCore import Qt, QPoint, QRect, QObject, Signal, Slot
-from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -105,6 +105,10 @@ except Exception:  # pragma: no cover
 DEFAULT_DELAY_S = 2
 DEFAULT_CONFIDENCE = 0.9
 DEFAULT_GRAYSCALE = True
+
+# preview image (for recorded clicks)
+PREVIEW_SIZE = 75  # requested: 75x75
+PREVIEW_HALF = PREVIEW_SIZE // 2  # 37
 
 
 def now_utc_iso() -> str:
@@ -897,9 +901,26 @@ class AutoClickEditor(QMainWindow):
             self.steps_table.setItem(i, 6, QTableWidgetItem(str(st.get("button", ""))))
             self.steps_table.setItem(i, 7, QTableWidgetItem(str(st.get("clicks", ""))))
             self.steps_table.setItem(i, 8, QTableWidgetItem(str(st.get("delay_s", ""))))
-            self.steps_table.setItem(i, 9, QTableWidgetItem(str(st.get("preview", ""))))
+            prev_path = str(st.get("preview", ""))
+            item_prev = QTableWidgetItem(prev_path)
+            # Show thumbnail directly in table (best-effort)
+            try:
+                if prev_path and self.project_dir:
+                    abs_path = os.path.join(self.project_dir, prev_path)
+                    if os.path.exists(abs_path):
+                        pm = QPixmap(abs_path)
+                        if not pm.isNull():
+                            pm2 = pm.scaled(PREVIEW_SIZE, PREVIEW_SIZE, Qt.AspectRatioMode.KeepAspectRatio)
+                            item_prev.setIcon(QIcon(pm2))
+            except Exception:
+                pass
+            self.steps_table.setItem(i, 9, item_prev)
 
         self.steps_table.resizeColumnsToContents()
+        try:
+            self.steps_table.verticalHeader().setDefaultSectionSize(PREVIEW_SIZE + 8)
+        except Exception:
+            pass
 
     # ----------------------- listeners -----------------------
 
@@ -932,12 +953,28 @@ class AutoClickEditor(QMainWindow):
     def _on_click(self, x, y, button, pressed):
         # Marshal to GUI thread; do not touch Qt widgets here.
         try:
+            # Normalize button name as string early (listener thread) to avoid enum quirks.
             btn_name = "left"
-            if mouse is not None:
-                if button == mouse.Button.right:
-                    btn_name = "right"
-                elif button == mouse.Button.middle:
-                    btn_name = "middle"
+            try:
+                # pynput Button often has .name (left/right/middle)
+                if hasattr(button, "name") and getattr(button, "name"):
+                    btn_name = str(getattr(button, "name"))
+                elif mouse is not None:
+                    if button == mouse.Button.right:
+                        btn_name = "right"
+                    elif button == mouse.Button.middle:
+                        btn_name = "middle"
+                    elif button == mouse.Button.left:
+                        btn_name = "left"
+                else:
+                    s = str(button)
+                    if "right" in s:
+                        btn_name = "right"
+                    elif "middle" in s:
+                        btn_name = "middle"
+            except Exception:
+                btn_name = "left"
+
             self._events.sig_click.emit(int(x), int(y), btn_name, bool(pressed))
         except Exception:
             pass
@@ -1033,24 +1070,24 @@ class AutoClickEditor(QMainWindow):
         prev_abs = os.path.join(previews_dir, prev_name)
         try:
             # Preview should be based on recorded click coordinates (pixel space):
-            # capture fullscreen, then crop 30x30 around (bx,by).
+            # capture fullscreen, then crop PREVIEW_SIZE around (bx,by).
             prev_rel = None
             full2, fw, fh = capture_fullscreen_bgr()
 
-            left = clamp(bx - 15, 0, int(fw) - 1)
-            top = clamp(by - 15, 0, int(fh) - 1)
-            right = clamp(left + 30, 1, int(fw))
-            bottom = clamp(top + 30, 1, int(fh))
+            left = clamp(bx - PREVIEW_HALF, 0, int(fw) - 1)
+            top = clamp(by - PREVIEW_HALF, 0, int(fh) - 1)
+            right = clamp(left + PREVIEW_SIZE, 1, int(fw))
+            bottom = clamp(top + PREVIEW_SIZE, 1, int(fh))
 
             crop = full2[top:bottom, left:right]
-            # If near edges, pad to 30x30 for consistency
-            if crop.shape[0] != 30 or crop.shape[1] != 30:
+            # If near edges, pad to PREVIEW_SIZE for consistency
+            if crop.shape[0] != PREVIEW_SIZE or crop.shape[1] != PREVIEW_SIZE:
                 crop = cv2.copyMakeBorder(
                     crop,
                     top=0,
-                    bottom=30 - crop.shape[0],
+                    bottom=PREVIEW_SIZE - crop.shape[0],
                     left=0,
-                    right=30 - crop.shape[1],
+                    right=PREVIEW_SIZE - crop.shape[1],
                     borderType=cv2.BORDER_CONSTANT,
                     value=(0, 0, 0),
                 )
