@@ -816,6 +816,8 @@ class AutoClickEditor(QMainWindow):
         self._show_message("已停止")
         if getattr(self, "chk_step_log", None) and self.chk_step_log.isChecked():
             self.step_log.hide()
+        # Ensure cursor returns to system default immediately
+        self._clear_override_cursor()
         self._update_ui_state()
 
     # ----------------------- steps editing -----------------------
@@ -1123,6 +1125,20 @@ class AutoClickEditor(QMainWindow):
         if self._cursor_anchor is None:
             self._cursor_anchor = dot_cursor(QColor(0, 160, 255, 220))
 
+    def _clear_override_cursor(self):
+        """Ensure override cursor is fully cleared.
+
+        Qt keeps an override-cursor stack; if setOverrideCursor() is called multiple times,
+        a single restoreOverrideCursor() may not be enough.
+        """
+        try:
+            # pop until empty
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        self._cursor_overridden = False
+
     def _update_cursor_state(self):
         """依錄製狀態切換游標。"""
         self._ensure_status_cursors()
@@ -1138,21 +1154,17 @@ class AutoClickEditor(QMainWindow):
             desired = self._cursor_rec
 
         if desired is None:
-            # restore
-            if self._cursor_overridden:
-                try:
-                    QApplication.restoreOverrideCursor()
-                except Exception:
-                    pass
-                self._cursor_overridden = False
+            self._clear_override_cursor()
             return
 
-        # set override
         try:
-            QApplication.setOverrideCursor(desired)
-            self._cursor_overridden = True
+            # Avoid growing the override stack.
+            if self._cursor_overridden and QApplication.overrideCursor() is not None:
+                QApplication.changeOverrideCursor(desired)
+            else:
+                QApplication.setOverrideCursor(desired)
+                self._cursor_overridden = True
         except Exception:
-            # if override fails, just ignore
             self._cursor_overridden = False
 
     def _is_point_in_our_windows(self, x: int, y: int) -> bool:
