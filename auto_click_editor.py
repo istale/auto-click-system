@@ -976,19 +976,25 @@ class AutoClickEditor(QMainWindow):
                 px = int(round(x * self._coord_scale_x))
                 py = int(round(y * self._coord_scale_y))
 
-                if not (rx <= px <= rx + rw and ry <= py <= ry + rh):
-                    self._show_message("你點的位置不在錨點截圖範圍內，請再點一次錨點。")
-                    return
+                # NOTE: Do NOT enforce "must click inside capture_rect".
+                # Under RDP/HighDPI, users may want to pick a reference point slightly outside the
+                # captured anchor image, or the capture_rect may not match perfectly.
+                # We let the user confirm correctness instead of blocking.
 
                 # Store anchor_click_xy in pixel coordinates to keep consistent with offsets/capture_rect
                 self.anchor_click_xy = {"x": int(px), "y": int(py)}
-                anch["click_in_image"] = {"x": int(px - rx), "y": int(py - ry)}
+
+                # Compute click_in_image relative to capture_rect, but clamp into image bounds
+                # so downstream locate math stays valid.
+                ix = clamp(int(px - rx), 0, max(0, rw - 1))
+                iy = clamp(int(py - ry), 0, max(0, rh - 1))
+                anch["click_in_image"] = {"x": ix, "y": iy}
                 self.expect_anchor_click = False
                 self._show_message("已設定錨點基準點（anchor_click_xy）")
                 self._show_step_log()
                 try:
                     self.step_log.append_line(
-                        f"[{now_utc_iso()}] anchor_click_xy=({int(px)},{int(py)}) click_in_image=({int(px-rx)},{int(py-ry)})"
+                        f"[{now_utc_iso()}] anchor_click_xy=({int(px)},{int(py)}) click_in_image=({ix},{iy})"
                     )
                 except Exception:
                     pass
