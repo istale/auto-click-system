@@ -293,8 +293,8 @@ class ScreenRegionSelector(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._start is not None:
             self._end = event.position().toPoint()
             r = QRect(self._start, self._end).normalized()
-            # Translate back to global screen coordinates
-            self.selected_rect = r.translated(self.geometry().topLeft())
+            # Keep rect in widget-local coordinates; caller will map to screenshot pixels.
+            self.selected_rect = r
             self.close()
 
     def keyPressEvent(self, event):
@@ -732,17 +732,30 @@ class AutoClickEditor(QMainWindow):
             self._show_message("已取消錨點圖截取")
             return
 
+        # rect is in selector widget coordinates (logical)
         x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
 
         # screenshot: prefer cropping from the full screenshot (if available)
         img = None
-        if full_bgr is not None and np is not None and cv2 is not None:
+        if full_bgr is not None and np is not None and cv2 is not None and full_w and full_h:
             try:
-                # rect is in Qt logical coords; convert to screenshot pixel coords
-                px = int(round(x * self._coord_scale_x))
-                py = int(round(y * self._coord_scale_y))
-                pw = int(round(w * self._coord_scale_x))
-                ph = int(round(h * self._coord_scale_y))
+                # rect is in selector widget coords. Map to screenshot pixel coords using the displayed scaling.
+                sel_w = max(1, selector.width())
+                sel_h = max(1, selector.height())
+                sx = float(full_w) / float(sel_w)
+                sy = float(full_h) / float(sel_h)
+
+                px = int(round(x * sx))
+                py = int(round(y * sy))
+                pw = int(round(w * sx))
+                ph = int(round(h * sy))
+
+                # clamp
+                px = clamp(px, 0, int(full_w) - 1)
+                py = clamp(py, 0, int(full_h) - 1)
+                pw = clamp(pw, 1, int(full_w) - px)
+                ph = clamp(ph, 1, int(full_h) - py)
+
                 crop = full_bgr[py : py + ph, px : px + pw]
                 # store x/y/w/h in pixel space for capture_rect consistency
                 x, y, w, h = px, py, pw, ph
