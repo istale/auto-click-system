@@ -581,6 +581,53 @@ class AutoClickEditor(QMainWindow):
 
     # ----------------------- project / yaml -----------------------
 
+    def _load_editor_settings_from_doc(self):
+        """Load UI-only settings from YAML doc into widgets/state."""
+        try:
+            g = self.data.get("global") if isinstance(self.data.get("global"), dict) else {}
+            ed = g.get("_editor") if isinstance(g.get("_editor"), dict) else {}
+
+            dx = int(ed.get("preview_dx") or 0)
+            dy = int(ed.get("preview_dy") or 0)
+            ds = int(ed.get("preview_display_size") or DEFAULT_PREVIEW_DISPLAY_SIZE)
+
+            self.preview_adjust_dx = dx
+            self.preview_adjust_dy = dy
+            self.preview_display_size = ds
+
+            # widgets may not exist during early init
+            if hasattr(self, "spin_preview_dx"):
+                self.spin_preview_dx.blockSignals(True)
+                self.spin_preview_dy.blockSignals(True)
+                self.spin_preview_dx.setValue(dx)
+                self.spin_preview_dy.setValue(dy)
+                self.spin_preview_dx.blockSignals(False)
+                self.spin_preview_dy.blockSignals(False)
+
+            if hasattr(self, "spin_preview_display"):
+                self.spin_preview_display.blockSignals(True)
+                self.spin_preview_display.setValue(ds)
+                self.spin_preview_display.blockSignals(False)
+        except Exception:
+            pass
+
+    def _persist_editor_settings_to_doc(self):
+        """Persist UI-only settings into YAML doc (global._editor)."""
+        if not isinstance(self.data, dict):
+            return
+        g = self.data.get("global")
+        if not isinstance(g, dict):
+            g = {}
+            self.data["global"] = g
+        ed = g.get("_editor")
+        if not isinstance(ed, dict):
+            ed = {}
+            g["_editor"] = ed
+
+        ed["preview_dx"] = int(self.preview_adjust_dx)
+        ed["preview_dy"] = int(self.preview_adjust_dy)
+        ed["preview_display_size"] = int(self.preview_display_size)
+
     def on_choose_project(self):
         d = QFileDialog.getExistingDirectory(self, "選擇流程包資料夾")
         if not d:
@@ -597,6 +644,8 @@ class AutoClickEditor(QMainWindow):
         if not self._require_project():
             return
         self.data = self._new_doc()
+        # carry current UI-only settings into the new doc
+        self._persist_editor_settings_to_doc()
         self.current_flow_id = None
         self._refresh_flow_list()
         self._refresh_steps_table()
@@ -611,6 +660,7 @@ class AutoClickEditor(QMainWindow):
         with open(p, "r", encoding="utf-8") as f:
             self.data = yaml.safe_load(f) or self._new_doc()
         self.yaml_path = p
+        self._load_editor_settings_from_doc()
         self.current_flow_id = None
         self._refresh_flow_list()
         self._refresh_steps_table()
@@ -621,6 +671,10 @@ class AutoClickEditor(QMainWindow):
             return
         if not self.yaml_path:
             self.yaml_path = os.path.join(self.project_dir, "flow.yaml")
+
+        # persist UI-only settings before saving
+        self._persist_editor_settings_to_doc()
+
         # write
         with open(self.yaml_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(self.data, f, allow_unicode=True, sort_keys=False)
@@ -844,9 +898,11 @@ class AutoClickEditor(QMainWindow):
     def _on_preview_calibration_changed(self, _v: int):
         self.preview_adjust_dx = int(self.spin_preview_dx.value())
         self.preview_adjust_dy = int(self.spin_preview_dy.value())
+        self._persist_editor_settings_to_doc()
 
     def _on_preview_display_size_changed(self, v: int):
         self.preview_display_size = int(v)
+        self._persist_editor_settings_to_doc()
         # refresh table icons/row heights
         self._refresh_steps_table()
 
