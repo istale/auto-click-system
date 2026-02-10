@@ -194,20 +194,22 @@ class ScreenRegionSelector(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._start = event.globalPosition().toPoint()
+            # Use widget-local coordinates for painting correctness on virtual desktops.
+            self._start = event.position().toPoint()
             self._end = self._start
             self.update()
 
     def mouseMoveEvent(self, event):
         if self._start is not None:
-            self._end = event.globalPosition().toPoint()
+            self._end = event.position().toPoint()
             self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._start is not None:
-            self._end = event.globalPosition().toPoint()
+            self._end = event.position().toPoint()
             r = QRect(self._start, self._end).normalized()
-            self.selected_rect = r
+            # Translate back to global screen coordinates
+            self.selected_rect = r.translated(self.geometry().topLeft())
             self.close()
 
     def keyPressEvent(self, event):
@@ -231,16 +233,12 @@ class ScreenRegionSelector(QWidget):
 
         r = QRect(self._start, self._end).normalized()
 
-        # 3) Clear selected area (only works if the window supports composition)
-        # If composition clear is not supported, the user can still see the rectangle border.
-        try:
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            p.fillRect(r, QColor(0, 0, 0, 0))
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        except Exception:
-            pass
+        # 3) Highlight selected area so it is clearly visible.
+        # In some environments (e.g. RDP), composition clear may not work reliably,
+        # so we avoid relying on it.
+        p.fillRect(r, QColor(255, 255, 255, 40))
 
-        pen = QPen(QColor(0, 200, 255, 220))
+        pen = QPen(QColor(0, 200, 255, 240))
         pen.setWidth(2)
         p.setPen(pen)
         p.drawRect(r)
