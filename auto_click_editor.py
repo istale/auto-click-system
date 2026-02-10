@@ -176,35 +176,21 @@ def bgr_to_qpixmap(bgr):
 def capture_fullscreen_bgr():
     """Capture fullscreen image as numpy BGR (pixel coordinates).
 
-    Preferred backend: mss (more stable on Windows/RDP).
-    Fallback: pyautogui/PIL.
+    IMPORTANT (Windows RDP / HighDPI):
+    - Do NOT use Qt-based screen capture.
+    - Prefer mss + numpy + opencv for stable pixel-perfect capture.
 
     Returns (bgr, pixel_w, pixel_h)
     """
-    # mss path
-    if mss is not None and np is not None and cv2 is not None:
-        try:
-            with mss.mss() as sct:
-                mon = sct.monitors[0]  # virtual screen
-                raw = sct.grab(mon)  # BGRA
-                arr = np.array(raw, dtype=np.uint8)
-                bgr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
-                return bgr, int(mon["width"]), int(mon["height"])
-        except Exception:
-            pass
+    if mss is None or np is None or cv2 is None:
+        raise RuntimeError("Missing deps: mss + numpy + opencv-python are required")
 
-    # fallback: pyautogui
-    if pyautogui is not None and Image is not None and np is not None and cv2 is not None:
-        try:
-            pil = pyautogui.screenshot()
-            rgb = np.array(pil)
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            h, w = bgr.shape[:2]
-            return bgr, int(w), int(h)
-        except Exception:
-            pass
-
-    raise RuntimeError("No screenshot backend available (need mss+opencv+numpy or pyautogui+PIL)")
+    with mss.mss() as sct:
+        mon = sct.monitors[0]  # virtual screen
+        raw = sct.grab(mon)  # BGRA
+        arr = np.array(raw, dtype=np.uint8)
+        bgr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+        return bgr, int(mon["width"]), int(mon["height"])
 
 
 @dataclass
@@ -682,140 +668,78 @@ class AutoClickEditor(QMainWindow):
         self._update_ui_state()
         self.showMinimized()
 
-        # Take a full screenshot first (prefer mss+opencv).
-        full_bgr = None
-        full_w = None
-        full_h = None
+        # Take a full screenshot (pixel coordinates) using mss+opencv.
         try:
             full_bgr, full_w, full_h = capture_fullscreen_bgr()
+        except Exception as e:
+            self._in_capture_anchor = False
+            try:
+                self.showNormal()
+            except Exception:
+                pass
+            self._update_ui_state()
+            QMessageBox.warning(
+                self,
+                "無法截圖",
+                "截圖需要 OpenCV 路徑（避免 Qt/pyautogui 在 RDP/HighDPI 的問題）。\n"
+                "請安裝：pip install mss opencv-python numpy\n\n"
+                f"詳細錯誤：{e}",
+            )
+            return
 
-            # Compute coordinate scale between Qt virtual desktop (logical) and screenshot pixels.
-            v = QGuiApplication.primaryScreen().virtualGeometry()
-            if v.width() > 0 and v.height() > 0 and full_w and full_h:
-                self._coord_scale_x = float(full_w) / float(v.width())
-                self._coord_scale_y = float(full_h) / float(v.height())
-        except Exception:
-            full_bgr = None
-            full_w = None
-            full_h = None
+        # Update logical->pixel scale for later click recording conversions.
+        v = QGuiApplication.primaryScreen().virtualGeometry()
+        if v.width() > 0 and v.height() > 0:
+            self._coord_scale_x = float(full_w) / float(v.width())
+            self._coord_scale_y = float(full_h) / float(v.height())
+        else:
             self._coord_scale_x = 1.0
             self._coord_scale_y = 1.0
 
-        using_opencv_roi = False
+        # OpenCV ROI selection (Enter 確認 / Esc 取消)
+        self._show_message("請在 OpenCV 視窗中拖曳框選錨點區域（Enter 確認 / Esc 取消）")
+        try:
+            win = "Select Anchor ROI"
+            cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+            cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
+            roi = cv2.selectROI(win, full_bgr, showCrosshair=True, fromCenter=False)
+            cv2.destroyWindow(win)
+            x, y, w, h = [int(v) for v in roi]
+        except Exception:
+            x = y = w = h = 0
 
-        # Prefer OpenCV ROI selection (more predictable under RDP/HighDPI)
-        if full_bgr is not None and cv2 is not None:
-            self._show_message("請在 OpenCV 視窗中拖曳框選錨點區域（Enter 確認 / Esc 取消）")
-            try:
-                win = "Select Anchor ROI"
-                cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-                cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
-                roi = cv2.selectROI(win, full_bgr, showCrosshair=True, fromCenter=False)
-                cv2.destroyWindow(win)
-                x, y, w, h = [int(v) for v in roi]
-                using_opencv_roi = True
-            except Exception:
-                x = y = w = h = 0
+        # Restore editor window and cursor state
+        self._in_capture_anchor = False
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+        self._update_ui_state()
 
-            # Restore editor window and cursor state
-            self._in_capture_anchor = False
-            try:
-                self.showNormal()
-                self.raise_()
-                self.activateWindow()
-            except Exception:
-                pass
-            self._update_ui_state()
+        if w <= 5 or h <= 5:
+            self._show_message("已取消錨點圖截取")
+            return
 
-            if w <= 5 or h <= 5:
-                self._show_message("已取消錨點圖截取")
-                return
-        else:
-            # Fallback: Qt selector overlay (may be less reliable under RDP)
-            bg_pm = None
-            try:
-                if full_bgr is not None:
-                    bg_pm = bgr_to_qpixmap(full_bgr)
-            except Exception:
-                bg_pm = None
+        # Clamp ROI to screenshot bounds
+        x = clamp(int(x), 0, int(full_w) - 1)
+        y = clamp(int(y), 0, int(full_h) - 1)
+        w = clamp(int(w), 1, int(full_w) - x)
+        h = clamp(int(h), 1, int(full_h) - y)
 
-            self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
-            selector = ScreenRegionSelector(bg=bg_pm)
-            selector.show()
-            selector.raise_()
-            selector.activateWindow()
-
-            # Run a nested loop until selector closes
-            while selector.isVisible():
-                QApplication.processEvents()
-                time.sleep(0.01)
-
-            # Restore editor window and cursor state
-            self._in_capture_anchor = False
-            try:
-                self.showNormal()
-                self.raise_()
-                self.activateWindow()
-            except Exception:
-                pass
-            self._update_ui_state()
-
-            rect = selector.selected_rect
-            if rect is None or rect.width() <= 5 or rect.height() <= 5:
-                self._show_message("已取消錨點圖截取")
-                return
-
-            # rect is in selector widget coordinates (logical)
-            x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
-
-        # screenshot: prefer cropping from the full screenshot (if available)
-        img = None
-        if full_bgr is not None and np is not None and cv2 is not None and full_w and full_h:
-            try:
-                if using_opencv_roi:
-                    # OpenCV ROI is already in screenshot pixel coordinates
-                    px, py, pw, ph = int(x), int(y), int(w), int(h)
-                else:
-                    # rect is in selector widget coords. Map to screenshot pixel coords using the displayed scaling.
-                    sel_w = max(1, selector.width())
-                    sel_h = max(1, selector.height())
-                    sx = float(full_w) / float(sel_w)
-                    sy = float(full_h) / float(sel_h)
-
-                    px = int(round(x * sx))
-                    py = int(round(y * sy))
-                    pw = int(round(w * sx))
-                    ph = int(round(h * sy))
-
-                # clamp
-                px = clamp(px, 0, int(full_w) - 1)
-                py = clamp(py, 0, int(full_h) - 1)
-                pw = clamp(pw, 1, int(full_w) - px)
-                ph = clamp(ph, 1, int(full_h) - py)
-
-                crop = full_bgr[py : py + ph, px : px + pw]
-                # store x/y/w/h in pixel space for capture_rect consistency
-                x, y, w, h = px, py, pw, ph
-                # convert to PIL for saving
-                if Image is not None:
-                    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                    img = Image.fromarray(rgb)
-            except Exception:
-                img = None
-
-        if img is None:
-            # fallback: use pyautogui region capture
-            if pyautogui is None:
-                QMessageBox.warning(self, "無法截圖", "無法截圖：請安裝 mss+opencv+numpy 或確保 pyautogui 可用")
-                return
-            img = pyautogui.screenshot(region=(x, y, w, h))
+        crop = full_bgr[y : y + h, x : x + w]
 
         anchors_dir = os.path.join(self.project_dir, "anchors")
         ensure_dir(anchors_dir)
         flow_id = self.current_flow_id
         out_name = f"{flow_id}_anchor.png"
         out_abs = os.path.join(anchors_dir, out_name)
-        img.save(out_abs)
+        try:
+            cv2.imwrite(out_abs, crop)
+        except Exception as e:
+            QMessageBox.warning(self, "存檔失敗", f"無法儲存錨點圖：{out_abs}\n{e}")
+            return
 
         # store anchor info
         f = self._ensure_flow(flow_id)
