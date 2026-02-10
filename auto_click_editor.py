@@ -424,16 +424,19 @@ class AutoClickEditor(QMainWindow):
         layout.addWidget(self.lbl_status)
 
         # Steps table
-        self.steps_table = QTableWidget(0, 8)
+        # 欄位要讓使用者能「驗證錄製結果」：含座標、截圖、與下一步延遲秒數。
+        self.steps_table = QTableWidget(0, 10)
         self.steps_table.setHorizontalHeaderLabels([
             "#",
             "動作",
+            "click.x",
+            "click.y",
             "offset.x",
             "offset.y",
             "button",
             "clicks",
-            "delay_s",
-            "preview",
+            "下一步延遲(s)",
+            "截圖(preview)",
         ])
         layout.addWidget(self.steps_table)
 
@@ -781,17 +784,28 @@ class AutoClickEditor(QMainWindow):
             self.steps_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.steps_table.setItem(i, 1, QTableWidgetItem(str(st.get("action"))))
 
+            # UI-only metadata (do not affect execution)
+            ed = st.get("_editor") if isinstance(st.get("_editor"), dict) else {}
+            cxy = ed.get("click_xy") if isinstance(ed, dict) else None
+            cx = ""
+            cy = ""
+            if isinstance(cxy, dict):
+                cx = str(cxy.get("x", ""))
+                cy = str(cxy.get("y", ""))
+            self.steps_table.setItem(i, 2, QTableWidgetItem(cx))
+            self.steps_table.setItem(i, 3, QTableWidgetItem(cy))
+
             ox = ""
             oy = ""
             if isinstance(st.get("offset"), dict):
                 ox = str(st["offset"].get("x", ""))
                 oy = str(st["offset"].get("y", ""))
-            self.steps_table.setItem(i, 2, QTableWidgetItem(ox))
-            self.steps_table.setItem(i, 3, QTableWidgetItem(oy))
-            self.steps_table.setItem(i, 4, QTableWidgetItem(str(st.get("button", ""))))
-            self.steps_table.setItem(i, 5, QTableWidgetItem(str(st.get("clicks", ""))))
-            self.steps_table.setItem(i, 6, QTableWidgetItem(str(st.get("delay_s", ""))))
-            self.steps_table.setItem(i, 7, QTableWidgetItem(str(st.get("preview", ""))))
+            self.steps_table.setItem(i, 4, QTableWidgetItem(ox))
+            self.steps_table.setItem(i, 5, QTableWidgetItem(oy))
+            self.steps_table.setItem(i, 6, QTableWidgetItem(str(st.get("button", ""))))
+            self.steps_table.setItem(i, 7, QTableWidgetItem(str(st.get("clicks", ""))))
+            self.steps_table.setItem(i, 8, QTableWidgetItem(str(st.get("delay_s", ""))))
+            self.steps_table.setItem(i, 9, QTableWidgetItem(str(st.get("preview", ""))))
 
         self.steps_table.resizeColumnsToContents()
 
@@ -908,6 +922,10 @@ class AutoClickEditor(QMainWindow):
             "clicks": clicks,
             "delay_s": DEFAULT_DELAY_S,
             "preview": prev_rel,
+            # UI-only metadata (not used for execution)
+            "_editor": {
+                "click_xy": {"x": bx, "y": by},
+            },
         }
 
         steps.append(step)
@@ -917,8 +935,10 @@ class AutoClickEditor(QMainWindow):
         try:
             idx = len(steps)
             self._show_step_log()
+            delay_s = DEFAULT_DELAY_S
+            prev = prev_rel or ""
             self.step_log.append_line(
-                f"[{now_utc_iso()}] step{idx:04d} click_xy=({bx},{by}) offset=({offset['x']},{offset['y']}) {btn_name} clicks={clicks}"
+                f"[{now_utc_iso()}] step{idx:04d} click=({bx},{by}) offset=({offset['x']},{offset['y']}) {btn_name} clicks={clicks} next_in={delay_s}s preview={prev}"
             )
         except Exception:
             pass
