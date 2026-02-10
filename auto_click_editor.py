@@ -45,7 +45,7 @@ import yaml
 
 # GUI
 from PySide6.QtCore import Qt, QPoint, QRect
-from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -122,6 +122,23 @@ def capture_preview_30x30(x: int, y: int):
     return img
 
 
+def pil_to_qpixmap(img):
+    """Convert a PIL Image (RGB/RGBA) to QPixmap without extra deps."""
+    if Image is None:
+        raise RuntimeError("PIL not available")
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA")
+    if img.mode == "RGB":
+        data = img.tobytes("raw", "RGB")
+        qimg = QImage(data, img.size[0], img.size[1], QImage.Format.Format_RGB888)
+    else:
+        data = img.tobytes("raw", "RGBA")
+        qimg = QImage(data, img.size[0], img.size[1], QImage.Format.Format_RGBA8888)
+    # Make a deep copy because data buffer will be freed with Python object
+    qimg = qimg.copy()
+    return QPixmap.fromImage(qimg)
+
+
 @dataclass
 class AnchorInfo:
     image: str  # relative path under project
@@ -154,35 +171,35 @@ class Step:
 class ScreenRegionSelector(QWidget):
     """全螢幕框選工具：回傳螢幕座標的 QRect。
 
-    注意：在 Windows 遠端桌面（RDP）等環境中，
-    透明全螢幕遮罩（WA_TranslucentBackground）可能無法「透視」到底下桌面，
-    造成使用者看到全黑。
+    設計重點：避免在 Windows 遠端桌面（RDP）下透明遮罩/合成導致的黑屏與座標偏移。
 
-    因此本工具採用「先抓一張螢幕截圖當背景」的方式，
-    再在其上畫遮罩與框選框，避免黑屏。
+    - 背景優先使用「pyautogui 抓到的螢幕截圖」→ 再用 Qt 顯示並框選
+      （此時選框/畫面完全同一張圖，較不會出現 shift）
+    - 若 pyautogui 不可用，再退回 Qt grabWindow 背景
     """
 
-    def __init__(self):
+    def __init__(self, bg: Optional[QPixmap] = None):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
 
-        # Background screenshot (virtual desktop)
-        self._bg: Optional[QPixmap] = None
         self._virtual = QGuiApplication.primaryScreen().virtualGeometry()
-        try:
-            pm = QPixmap(self._virtual.size())
-            pm.fill(Qt.GlobalColor.black)
-            p = QPainter(pm)
-            for s in QGuiApplication.screens():
-                g = s.geometry()
-                grab = s.grabWindow(0)
-                offset = g.topLeft() - self._virtual.topLeft()
-                p.drawPixmap(offset, grab)
-            p.end()
-            self._bg = pm
-        except Exception:
-            # Fallback: no background (will still work, but might be black on some systems)
-            self._bg = None
+
+        # Background screenshot (virtual desktop)
+        self._bg: Optional[QPixmap] = bg
+        if self._bg is None:
+            try:
+                pm = QPixmap(self._virtual.size())
+                pm.fill(Qt.GlobalColor.black)
+                p = QPainter(pm)
+                for s in QGuiApplication.screens():
+                    g = s.geometry()
+                    grab = s.grabWindow(0)
+                    offset = g.topLeft() - self._virtual.topLeft()
+                    p.drawPixmap(offset, grab)
+                p.end()
+                self._bg = pm
+            except Exception:
+                self._bg = None
 
         # Cover the virtual desktop area
         self.setGeometry(self._virtual)
@@ -524,8 +541,20 @@ class AutoClickEditor(QMainWindow):
         self._update_ui_state()
         self.showMinimized()
 
+        # Take a full screenshot first (pyautogui/PIL). This avoids RDP composition issues
+        # and keeps selection coordinates consistent with the captured pixels.
+        bg_pm = None
+        full_img = None
+        if pyautogui is not None and Image is not None:
+            try:
+                full_img = pyautogui.screenshot()  # PIL Image
+                bg_pm = pil_to_qpixmap(full_img)
+            except Exception:
+                full_img = None
+                bg_pm = None
+
         self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
-        selector = ScreenRegionSelector()
+        selector = ScreenRegionSelector(bg=bg_pm)
         selector.show()
         selector.raise_()
         selector.activateWindow()
@@ -552,11 +581,21 @@ class AutoClickEditor(QMainWindow):
 
         x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
 
-        if pyautogui is None:
-            QMessageBox.warning(self, "無法截圖", "pyautogui 無法使用（可能缺少套件或目前環境無桌面 DISPLAY）")
-            return
-        # screenshot
-        img = pyautogui.screenshot(region=(x, y, w, h))
+        # screenshot: prefer cropping from the full screenshot (if available)
+        if full_img is not None and Image is not None:
+            try:
+                img = full_img.crop((x, y, x + w, y + h))
+            except Exception:
+                img = None
+        else:
+            img = None
+
+        if img is None:
+            if pyautogui is None:
+                QMessageBox.warning(self, "無法截圖", "pyautogui 無法使用（可能缺少套件或目前環境無桌面 DISPLAY）")
+                return
+            # fallback: capture region directly
+            img = pyautogui.screenshot(region=(x, y, w, h))
 
         anchors_dir = os.path.join(self.project_dir, "anchors")
         ensure_dir(anchors_dir)
