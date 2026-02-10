@@ -682,73 +682,110 @@ class AutoClickEditor(QMainWindow):
         self._update_ui_state()
         self.showMinimized()
 
-        # Take a full screenshot first (prefer mss+opencv). This avoids RDP composition issues
-        # and keeps selection coordinates consistent with the captured pixels.
-        bg_pm = None
+        # Take a full screenshot first (prefer mss+opencv).
         full_bgr = None
         full_w = None
         full_h = None
         try:
             full_bgr, full_w, full_h = capture_fullscreen_bgr()
-            bg_pm = bgr_to_qpixmap(full_bgr)
 
             # Compute coordinate scale between Qt virtual desktop (logical) and screenshot pixels.
-            # This matters on Windows DPI scaling (e.g. 125%).
             v = QGuiApplication.primaryScreen().virtualGeometry()
             if v.width() > 0 and v.height() > 0 and full_w and full_h:
                 self._coord_scale_x = float(full_w) / float(v.width())
                 self._coord_scale_y = float(full_h) / float(v.height())
         except Exception:
             full_bgr = None
-            bg_pm = None
             full_w = None
             full_h = None
             self._coord_scale_x = 1.0
             self._coord_scale_y = 1.0
 
-        self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
-        selector = ScreenRegionSelector(bg=bg_pm)
-        selector.show()
-        selector.raise_()
-        selector.activateWindow()
+        using_opencv_roi = False
 
-        # Run a nested loop until selector closes
-        while selector.isVisible():
-            QApplication.processEvents()
-            time.sleep(0.01)
+        # Prefer OpenCV ROI selection (more predictable under RDP/HighDPI)
+        if full_bgr is not None and cv2 is not None:
+            self._show_message("請在 OpenCV 視窗中拖曳框選錨點區域（Enter 確認 / Esc 取消）")
+            try:
+                win = "Select Anchor ROI"
+                cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+                cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
+                roi = cv2.selectROI(win, full_bgr, showCrosshair=True, fromCenter=False)
+                cv2.destroyWindow(win)
+                x, y, w, h = [int(v) for v in roi]
+                using_opencv_roi = True
+            except Exception:
+                x = y = w = h = 0
 
-        # Restore editor window and cursor state
-        self._in_capture_anchor = False
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-        self._update_ui_state()
+            # Restore editor window and cursor state
+            self._in_capture_anchor = False
+            try:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+            self._update_ui_state()
 
-        rect = selector.selected_rect
-        if rect is None or rect.width() <= 5 or rect.height() <= 5:
-            self._show_message("已取消錨點圖截取")
-            return
+            if w <= 5 or h <= 5:
+                self._show_message("已取消錨點圖截取")
+                return
+        else:
+            # Fallback: Qt selector overlay (may be less reliable under RDP)
+            bg_pm = None
+            try:
+                if full_bgr is not None:
+                    bg_pm = bgr_to_qpixmap(full_bgr)
+            except Exception:
+                bg_pm = None
 
-        # rect is in selector widget coordinates (logical)
-        x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
+            self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
+            selector = ScreenRegionSelector(bg=bg_pm)
+            selector.show()
+            selector.raise_()
+            selector.activateWindow()
+
+            # Run a nested loop until selector closes
+            while selector.isVisible():
+                QApplication.processEvents()
+                time.sleep(0.01)
+
+            # Restore editor window and cursor state
+            self._in_capture_anchor = False
+            try:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+            self._update_ui_state()
+
+            rect = selector.selected_rect
+            if rect is None or rect.width() <= 5 or rect.height() <= 5:
+                self._show_message("已取消錨點圖截取")
+                return
+
+            # rect is in selector widget coordinates (logical)
+            x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
 
         # screenshot: prefer cropping from the full screenshot (if available)
         img = None
         if full_bgr is not None and np is not None and cv2 is not None and full_w and full_h:
             try:
-                # rect is in selector widget coords. Map to screenshot pixel coords using the displayed scaling.
-                sel_w = max(1, selector.width())
-                sel_h = max(1, selector.height())
-                sx = float(full_w) / float(sel_w)
-                sy = float(full_h) / float(sel_h)
+                if using_opencv_roi:
+                    # OpenCV ROI is already in screenshot pixel coordinates
+                    px, py, pw, ph = int(x), int(y), int(w), int(h)
+                else:
+                    # rect is in selector widget coords. Map to screenshot pixel coords using the displayed scaling.
+                    sel_w = max(1, selector.width())
+                    sel_h = max(1, selector.height())
+                    sx = float(full_w) / float(sel_w)
+                    sy = float(full_h) / float(sel_h)
 
-                px = int(round(x * sx))
-                py = int(round(y * sy))
-                pw = int(round(w * sx))
-                ph = int(round(h * sy))
+                    px = int(round(x * sx))
+                    py = int(round(y * sy))
+                    pw = int(round(w * sx))
+                    ph = int(round(h * sy))
 
                 # clamp
                 px = clamp(px, 0, int(full_w) - 1)
