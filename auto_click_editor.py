@@ -41,7 +41,13 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import yaml
+try:
+    import yaml
+except Exception as e:  # pragma: no cover
+    print("Missing dependency: pyyaml")
+    print("Install (Windows): py -m pip install pyyaml")
+    print("Or full deps: py -m pip install PySide6 pyyaml pynput pillow mss opencv-python numpy")
+    raise SystemExit(1) from e
 
 # GUI
 from PySide6.QtCore import Qt, QPoint, QRect, QObject, Signal, Slot
