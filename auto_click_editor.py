@@ -139,6 +139,13 @@ def clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
+# Pure logic (unit-testable)
+try:
+    from auto_click_core import preview_crop_plan  # type: ignore
+except Exception:  # pragma: no cover
+    preview_crop_plan = None
+
+
 def capture_preview_30x30(x: int, y: int):
     """以 click 為中心裁 30×30。
 
@@ -1212,35 +1219,27 @@ class AutoClickEditor(QMainWindow):
             prev_rel = None
             full2, fw, fh = capture_fullscreen_bgr()
 
-            cx = bx + int(self.preview_adjust_dx)
-            cy = by + int(self.preview_adjust_dy)
+            if preview_crop_plan is None:
+                raise RuntimeError("preview_crop_plan not available")
 
-            # Desired window in pixel coords
-            left0 = cx - PREVIEW_CROP_HALF
-            top0 = cy - PREVIEW_CROP_HALF
-            right0 = left0 + PREVIEW_CROP_SIZE
-            bottom0 = top0 + PREVIEW_CROP_SIZE
+            plan = preview_crop_plan(
+                click_x=bx,
+                click_y=by,
+                screen_w=int(fw),
+                screen_h=int(fh),
+                size=int(PREVIEW_CROP_SIZE),
+                dx=int(self.preview_adjust_dx),
+                dy=int(self.preview_adjust_dy),
+            )
 
-            # Compute padding (to keep click centered even near edges)
-            pad_left = max(0, -left0)
-            pad_top = max(0, -top0)
-            pad_right = max(0, right0 - int(fw))
-            pad_bottom = max(0, bottom0 - int(fh))
-
-            # Clamp crop region to screen
-            left = clamp(left0, 0, int(fw))
-            top = clamp(top0, 0, int(fh))
-            right = clamp(right0, 0, int(fw))
-            bottom = clamp(bottom0, 0, int(fh))
-
-            crop = full2[top:bottom, left:right]
-            if pad_left or pad_top or pad_right or pad_bottom:
+            crop = full2[plan.top : plan.bottom, plan.left : plan.right]
+            if plan.pad_left or plan.pad_top or plan.pad_right or plan.pad_bottom:
                 crop = cv2.copyMakeBorder(
                     crop,
-                    top=pad_top,
-                    bottom=pad_bottom,
-                    left=pad_left,
-                    right=pad_right,
+                    top=plan.pad_top,
+                    bottom=plan.pad_bottom,
+                    left=plan.pad_left,
+                    right=plan.pad_right,
                     borderType=cv2.BORDER_CONSTANT,
                     value=(0, 0, 0),
                 )
