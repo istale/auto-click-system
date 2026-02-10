@@ -107,8 +107,11 @@ DEFAULT_CONFIDENCE = 0.9
 DEFAULT_GRAYSCALE = True
 
 # preview image (for recorded clicks)
-PREVIEW_SIZE = 120  # enlarged preview thumbnail (px)
-PREVIEW_HALF = PREVIEW_SIZE // 2  # 37
+# - CROP size: stored preview image resolution (pixels)
+# - DISPLAY size: how large the thumbnail is shown in the table (pixels)
+PREVIEW_CROP_SIZE = 120
+PREVIEW_CROP_HALF = PREVIEW_CROP_SIZE // 2
+DEFAULT_PREVIEW_DISPLAY_SIZE = 180
 
 
 def now_utc_iso() -> str:
@@ -407,6 +410,11 @@ class AutoClickEditor(QMainWindow):
         # None=unknown, True=pixel, False=logical
         self._listener_coords_are_pixels: Optional[bool] = None
 
+        # Preview calibration/display
+        self.preview_adjust_dx: int = 0
+        self.preview_adjust_dy: int = 0
+        self.preview_display_size: int = DEFAULT_PREVIEW_DISPLAY_SIZE
+
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
         self._kb_listener: Optional[keyboard.Listener] = None
@@ -471,6 +479,22 @@ class AutoClickEditor(QMainWindow):
         self.btn_del_flow = QPushButton("刪除流程")
         right.addWidget(self.btn_add_flow)
         right.addWidget(self.btn_del_flow)
+
+        # Preview calibration controls (to compensate remaining coordinate drift)
+        right.addWidget(QLabel("Preview 校正 (dx, dy)"))
+        row_cal = QHBoxLayout()
+        self.spin_preview_dx = QSpinBox()
+        self.spin_preview_dy = QSpinBox()
+        for sp in (self.spin_preview_dx, self.spin_preview_dy):
+            sp.setRange(-500, 500)
+            sp.setSingleStep(5)
+            sp.setValue(0)
+        row_cal.addWidget(QLabel("dx"))
+        row_cal.addWidget(self.spin_preview_dx)
+        row_cal.addWidget(QLabel("dy"))
+        row_cal.addWidget(self.spin_preview_dy)
+        right.addLayout(row_cal)
+
         right.addStretch(1)
         row2.addWidget(self.flow_list, 2)
         row2.addLayout(right, 1)
@@ -479,6 +503,8 @@ class AutoClickEditor(QMainWindow):
         self.btn_add_flow.clicked.connect(self.on_add_flow)
         self.btn_del_flow.clicked.connect(self.on_del_flow)
         self.flow_list.currentRowChanged.connect(self.on_flow_selected)
+        self.spin_preview_dx.valueChanged.connect(self._on_preview_calibration_changed)
+        self.spin_preview_dy.valueChanged.connect(self._on_preview_calibration_changed)
 
         # Anchor & recording controls
         row3 = QHBoxLayout()
@@ -500,11 +526,23 @@ class AutoClickEditor(QMainWindow):
         self.btn_record.clicked.connect(self.on_record)
         self.btn_stop.clicked.connect(self.on_stop)
         self.chk_step_log.toggled.connect(self._on_toggle_step_log)
+        self.spin_preview_display.valueChanged.connect(self._on_preview_display_size_changed)
 
         # status
         self.lbl_status = QLabel("狀態：idle")
         self.lbl_status.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.lbl_status)
+
+        # Preview display size control
+        row_ps = QHBoxLayout()
+        row_ps.addWidget(QLabel("Preview 顯示大小"))
+        self.spin_preview_display = QSpinBox()
+        self.spin_preview_display.setRange(60, 400)
+        self.spin_preview_display.setSingleStep(10)
+        self.spin_preview_display.setValue(DEFAULT_PREVIEW_DISPLAY_SIZE)
+        row_ps.addWidget(self.spin_preview_display)
+        row_ps.addStretch(1)
+        layout.addLayout(row_ps)
 
         # Steps table
         # 欄位要讓使用者能「驗證錄製結果」：含座標、截圖、與下一步延遲秒數。
@@ -803,6 +841,15 @@ class AutoClickEditor(QMainWindow):
             pass
         self._update_ui_state()
 
+    def _on_preview_calibration_changed(self, _v: int):
+        self.preview_adjust_dx = int(self.spin_preview_dx.value())
+        self.preview_adjust_dy = int(self.spin_preview_dy.value())
+
+    def _on_preview_display_size_changed(self, v: int):
+        self.preview_display_size = int(v)
+        # refresh table icons/row heights
+        self._refresh_steps_table()
+
     def _on_toggle_step_log(self, checked: bool):
         if not checked:
             self.step_log.hide()
@@ -918,7 +965,7 @@ class AutoClickEditor(QMainWindow):
                     if os.path.exists(abs_path):
                         pm = QPixmap(abs_path)
                         if not pm.isNull():
-                            pm2 = pm.scaled(PREVIEW_SIZE, PREVIEW_SIZE, Qt.AspectRatioMode.KeepAspectRatio)
+                            pm2 = pm.scaled(self.preview_display_size, self.preview_display_size, Qt.AspectRatioMode.KeepAspectRatio)
                             item_prev.setIcon(QIcon(pm2))
             except Exception:
                 pass
@@ -929,7 +976,7 @@ class AutoClickEditor(QMainWindow):
 
         self.steps_table.resizeColumnsToContents()
         try:
-            self.steps_table.verticalHeader().setDefaultSectionSize(PREVIEW_SIZE + 8)
+            self.steps_table.verticalHeader().setDefaultSectionSize(self.preview_display_size + 12)
         except Exception:
             pass
 
@@ -1099,15 +1146,18 @@ class AutoClickEditor(QMainWindow):
         prev_abs = os.path.join(previews_dir, prev_name)
         try:
             # Preview should be based on recorded click coordinates (pixel space):
-            # capture fullscreen, then crop PREVIEW_SIZE around (bx,by).
+            # capture fullscreen, then crop PREVIEW_CROP_SIZE around (bx,by), with user calibration.
             prev_rel = None
             full2, fw, fh = capture_fullscreen_bgr()
 
+            cx = bx + int(self.preview_adjust_dx)
+            cy = by + int(self.preview_adjust_dy)
+
             # Desired window in pixel coords
-            left0 = bx - PREVIEW_HALF
-            top0 = by - PREVIEW_HALF
-            right0 = left0 + PREVIEW_SIZE
-            bottom0 = top0 + PREVIEW_SIZE
+            left0 = cx - PREVIEW_CROP_HALF
+            top0 = cy - PREVIEW_CROP_HALF
+            right0 = left0 + PREVIEW_CROP_SIZE
+            bottom0 = top0 + PREVIEW_CROP_SIZE
 
             # Compute padding (to keep click centered even near edges)
             pad_left = max(0, -left0)
@@ -1134,8 +1184,8 @@ class AutoClickEditor(QMainWindow):
                 )
 
             # Safety: enforce exact size
-            if crop.shape[0] != PREVIEW_SIZE or crop.shape[1] != PREVIEW_SIZE:
-                crop = cv2.resize(crop, (PREVIEW_SIZE, PREVIEW_SIZE), interpolation=cv2.INTER_NEAREST)
+            if crop.shape[0] != PREVIEW_CROP_SIZE or crop.shape[1] != PREVIEW_CROP_SIZE:
+                crop = cv2.resize(crop, (PREVIEW_CROP_SIZE, PREVIEW_CROP_SIZE), interpolation=cv2.INTER_NEAREST)
 
             cv2.imwrite(prev_abs, crop)
             prev_rel = os.path.join("previews", prev_name)
