@@ -67,6 +67,13 @@ def generate(project_dir: str, flow_id: str, out_path: str) -> None:
     confidence = float(glob.get("confidence") or 0.9)
     grayscale = bool(glob.get("grayscale") if "grayscale" in glob else True)
 
+    # UI-only settings (optional): allow runner to self-check screen size
+    ed = glob.get("_editor") if isinstance(glob.get("_editor"), dict) else {}
+    capture_screen_w = ed.get("capture_screen_w")
+    capture_screen_h = ed.get("capture_screen_h")
+    capture_screen_w = int(capture_screen_w) if capture_screen_w is not None else None
+    capture_screen_h = int(capture_screen_h) if capture_screen_h is not None else None
+
     flow = _get_flow(doc, flow_id)
     anchor = flow.get("anchor")
     if not isinstance(anchor, dict):
@@ -130,6 +137,15 @@ def generate(project_dir: str, flow_id: str, out_path: str) -> None:
             f"    confidence = {confidence}\n",
             f"    grayscale = {str(grayscale)}\n",
             "\n",
+            f"    expected_screen = ({capture_screen_w if capture_screen_w is not None else 'None'}, {capture_screen_h if capture_screen_h is not None else 'None'})\n",
+            "    if expected_screen[0] is not None and expected_screen[1] is not None:\n",
+            "        cur = pyautogui.size()\n",
+            "        if (int(cur.width), int(cur.height)) != (int(expected_screen[0]), int(expected_screen[1])):\n",
+            "            raise RuntimeError(\n",
+            "                f\"Screen size mismatch: recorded={expected_screen} current={(cur.width, cur.height)}. \"\n",
+            "                f\"Please run with the same display/RDP scaling settings as when recording.\"\n",
+            "            )\n",
+            "\n",
             "    box = locate_anchor(anchor_path, confidence=confidence, grayscale=grayscale)\n",
             "    ax, ay, aw, ah = int(box.left), int(box.top), int(box.width), int(box.height)\n",
             f"    click_in_image = ({cx}, {cy})\n",
@@ -158,34 +174,43 @@ def generate(project_dir: str, flow_id: str, out_path: str) -> None:
             button = st.get("button") or "left"
             clicks = int(st.get("clicks") or 1)
 
-            script += textwrap.dedent(
-                f"""
-                x = anchor_click_xy[0] + ({ox})
-                y = anchor_click_xy[1] + ({oy})
-                pyautogui.click(x=x, y=y, clicks={clicks}, interval=0.05, button={_py(str(button))})
-                time.sleep({delay_s})
-                """
+            script += textwrap.indent(
+                textwrap.dedent(
+                    f"""
+                    x = anchor_click_xy[0] + ({ox})
+                    y = anchor_click_xy[1] + ({oy})
+                    pyautogui.click(x=x, y=y, clicks={clicks}, interval=0.05, button={_py(str(button))})
+                    time.sleep({delay_s})
+                    """
+                ).lstrip("\n"),
+                "    ",
             )
 
         elif action == "type":
             text = st.get("text") or ""
             interval_s = float(st.get("interval_s") or 0.02)
-            script += textwrap.dedent(
-                f"""
-                pyautogui.write({_py(str(text))}, interval={interval_s})
-                time.sleep({delay_s})
-                """
+            script += textwrap.indent(
+                textwrap.dedent(
+                    f"""
+                    pyautogui.write({_py(str(text))}, interval={interval_s})
+                    time.sleep({delay_s})
+                    """
+                ).lstrip("\n"),
+                "    ",
             )
 
         elif action == "hotkey":
             keys = st.get("keys") or []
             keys = [str(k) for k in keys]
             args = ", ".join(_py(k) for k in keys)
-            script += textwrap.dedent(
-                f"""
-                pyautogui.hotkey({args})
-                time.sleep({delay_s})
-                """
+            script += textwrap.indent(
+                textwrap.dedent(
+                    f"""
+                    pyautogui.hotkey({args})
+                    time.sleep({delay_s})
+                    """
+                ).lstrip("\n"),
+                "    ",
             )
 
         elif action == "wait":

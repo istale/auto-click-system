@@ -811,6 +811,20 @@ class AutoClickEditor(QMainWindow):
             self._coord_scale_x = 1.0
             self._coord_scale_y = 1.0
 
+        # Persist screen size used for capture into YAML (UI-only).
+        # This allows the runner script to self-check environment consistency.
+        try:
+            if self.data.get("global") is None:
+                self.data["global"] = {}
+            g = self.data.get("global") if isinstance(self.data.get("global"), dict) else {}
+            self.data["global"] = g
+            ed = g.get("_editor") if isinstance(g.get("_editor"), dict) else {}
+            g["_editor"] = ed
+            ed["capture_screen_w"] = int(full_w)
+            ed["capture_screen_h"] = int(full_h)
+        except Exception:
+            pass
+
         # OpenCV ROI selection (Enter 確認 / Esc 取消)
         self._show_message("請在 OpenCV 視窗中拖曳框選錨點區域（Enter 確認 / Esc 取消）")
         try:
