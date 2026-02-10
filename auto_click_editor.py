@@ -958,6 +958,10 @@ class AutoClickEditor(QMainWindow):
         if not pressed:
             return
 
+        # Do not record clicks on our own UI (e.g. Stop button, step log window).
+        if (self.recording and not self.paused) and self._is_point_in_our_windows(x, y):
+            return
+
         # anchor click setup
         if self.expect_anchor_click and self.current_flow_id:
             f = self._ensure_flow(self.current_flow_id)
@@ -1150,6 +1154,27 @@ class AutoClickEditor(QMainWindow):
         except Exception:
             # if override fails, just ignore
             self._cursor_overridden = False
+
+    def _is_point_in_our_windows(self, x: int, y: int) -> bool:
+        """Return True if a global (logical) point falls inside our own windows.
+
+        Used to avoid recording clicks on the editor UI itself (e.g. Stop button).
+        Note: x/y here are the raw pynput coordinates (likely logical coords).
+        """
+
+        try:
+            if self.frameGeometry().contains(x, y):
+                return True
+        except Exception:
+            pass
+
+        try:
+            if self.step_log.isVisible() and self.step_log.frameGeometry().contains(x, y):
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def _update_ui_state(self):
         # status
