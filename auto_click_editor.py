@@ -45,7 +45,7 @@ import yaml
 
 # GUI
 from PySide6.QtCore import Qt, QPoint, QRect
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -152,13 +152,41 @@ class Step:
 
 
 class ScreenRegionSelector(QWidget):
-    """全螢幕框選工具：回傳螢幕座標的 QRect。"""
+    """全螢幕框選工具：回傳螢幕座標的 QRect。
+
+    注意：在 Windows 遠端桌面（RDP）等環境中，
+    透明全螢幕遮罩（WA_TranslucentBackground）可能無法「透視」到底下桌面，
+    造成使用者看到全黑。
+
+    因此本工具採用「先抓一張螢幕截圖當背景」的方式，
+    再在其上畫遮罩與框選框，避免黑屏。
+    """
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+
+        # Background screenshot (virtual desktop)
+        self._bg: Optional[QPixmap] = None
+        self._virtual = QGuiApplication.primaryScreen().virtualGeometry()
+        try:
+            pm = QPixmap(self._virtual.size())
+            pm.fill(Qt.GlobalColor.black)
+            p = QPainter(pm)
+            for s in QGuiApplication.screens():
+                g = s.geometry()
+                grab = s.grabWindow(0)
+                offset = g.topLeft() - self._virtual.topLeft()
+                p.drawPixmap(offset, grab)
+            p.end()
+            self._bg = pm
+        except Exception:
+            # Fallback: no background (will still work, but might be black on some systems)
+            self._bg = None
+
+        # Cover the virtual desktop area
+        self.setGeometry(self._virtual)
         self.setWindowState(Qt.WindowState.WindowFullScreen)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self._start: Optional[QPoint] = None
         self._end: Optional[QPoint] = None
@@ -190,17 +218,27 @@ class ScreenRegionSelector(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        # dark overlay
+
+        # 1) Draw background screenshot (if available)
+        if self._bg is not None:
+            p.drawPixmap(0, 0, self._bg)
+
+        # 2) Dark overlay
         p.fillRect(self.rect(), QColor(0, 0, 0, 90))
 
         if self._start is None or self._end is None:
             return
 
         r = QRect(self._start, self._end).normalized()
-        # clear selected area
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        p.fillRect(r, QColor(0, 0, 0, 0))
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+        # 3) Clear selected area (only works if the window supports composition)
+        # If composition clear is not supported, the user can still see the rectangle border.
+        try:
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            p.fillRect(r, QColor(0, 0, 0, 0))
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        except Exception:
+            pass
 
         pen = QPen(QColor(0, 200, 255, 220))
         pen.setWidth(2)
