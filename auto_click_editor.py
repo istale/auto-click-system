@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 # GUI
-from PySide6.QtCore import Qt, QPoint, QRect
+from PySide6.QtCore import Qt, QPoint, QRect, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -263,6 +263,16 @@ class ScreenRegionSelector(QWidget):
         p.drawRect(r)
 
 
+class UiEvents(QObject):
+    """Thread-safe bridge: pynput callbacks run on background threads.
+
+    Use Qt signals to marshal events back to the GUI thread.
+    """
+
+    sig_f9 = Signal()
+    sig_click = Signal(int, int, str, bool)  # x, y, button_name, pressed
+
+
 class StepLogWindow(QWidget):
     """錄製時顯示一個小視窗，持續列出最近的步驟/座標。
 
@@ -333,6 +343,11 @@ class AutoClickEditor(QMainWindow):
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
         self._kb_listener: Optional[keyboard.Listener] = None
+
+        # UI events bridge (marshal listener thread -> GUI thread)
+        self._events = UiEvents()
+        self._events.sig_f9.connect(self._on_f9_gui)
+        self._events.sig_click.connect(self._on_click_gui)
 
         # step log window (small always-on-top)
         self.step_log = StepLogWindow()
@@ -830,17 +845,41 @@ class AutoClickEditor(QMainWindow):
     def _on_key_press(self, key):
         if keyboard is None:
             return
-        # F9 toggle pause/resume (only meaningful while recording)
+        # F9 toggle pause/resume
         try:
             if key == keyboard.Key.f9:
-                if self.recording:
-                    self.paused = not self.paused
-                    # UI 更新
-                    self._update_ui_state()
+                self._events.sig_f9.emit()
         except Exception:
             pass
 
     def _on_click(self, x, y, button, pressed):
+        # Marshal to GUI thread; do not touch Qt widgets here.
+        try:
+            btn_name = "left"
+            if mouse is not None:
+                if button == mouse.Button.right:
+                    btn_name = "right"
+                elif button == mouse.Button.middle:
+                    btn_name = "middle"
+            self._events.sig_click.emit(int(x), int(y), btn_name, bool(pressed))
+        except Exception:
+            pass
+
+    @Slot()
+    def _on_f9_gui(self):
+        if not self.recording:
+            return
+        self.paused = not self.paused
+        try:
+            self._show_step_log()
+            state = "PAUSED" if self.paused else "RESUME"
+            self.step_log.append_line(f"[{now_utc_iso()}] {state} (F9)")
+        except Exception:
+            pass
+        self._update_ui_state()
+
+    @Slot(int, int, str, bool)
+    def _on_click_gui(self, x: int, y: int, btn_name: str, pressed: bool):
         if not pressed:
             return
 
@@ -871,7 +910,6 @@ class AutoClickEditor(QMainWindow):
 
         if not self.recording or self.paused:
             return
-
         if not self.current_flow_id:
             return
 
@@ -887,16 +925,7 @@ class AutoClickEditor(QMainWindow):
 
         offset = {"x": bx - ax, "y": by - ay}
 
-        btn_name = "left"
-        if mouse is not None:
-            if button == mouse.Button.right:
-                btn_name = "right"
-            elif button == mouse.Button.middle:
-                btn_name = "middle"
-
-        # pynput doesn't directly tell double click; PoC uses click_count=1.
-        # We'll allow user to edit clicks in table later.
-        clicks = 1
+        clicks = 1  # PoC: no double-click detection
 
         # preview
         if not self.project_dir:
@@ -922,7 +951,6 @@ class AutoClickEditor(QMainWindow):
             "clicks": clicks,
             "delay_s": DEFAULT_DELAY_S,
             "preview": prev_rel,
-            # UI-only metadata (not used for execution)
             "_editor": {
                 "click_xy": {"x": bx, "y": by},
             },
@@ -935,7 +963,7 @@ class AutoClickEditor(QMainWindow):
         try:
             idx = len(steps)
             self._show_step_log()
-            delay_s = DEFAULT_DELAY_S
+            delay_s = int(step.get("delay_s") or DEFAULT_DELAY_S)
             prev = prev_rel or ""
             self.step_log.append_line(
                 f"[{now_utc_iso()}] step{idx:04d} click=({bx},{by}) offset=({offset['x']},{offset['y']}) {btn_name} clicks={clicks} next_in={delay_s}s preview={prev}"
