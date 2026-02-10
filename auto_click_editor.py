@@ -45,7 +45,7 @@ import yaml
 
 # GUI
 from PySide6.QtCore import Qt, QPoint, QRect
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -250,6 +250,12 @@ class AutoClickEditor(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("自動點擊系統 — 編輯器（PoC）")
+
+        # cursor state (recording indicator)
+        self._cursor_overridden = False
+        self._cursor_rec: Optional[QCursor] = None
+        self._cursor_pause: Optional[QCursor] = None
+        self._cursor_anchor: Optional[QCursor] = None
 
         # project
         self.project_dir: Optional[str] = None
@@ -787,6 +793,67 @@ class AutoClickEditor(QMainWindow):
             return False
         return True
 
+    def _ensure_status_cursors(self):
+        """建立狀態游標（紅點/黃點/藍點）。
+
+        目標：讓使用者一眼知道目前是否在錄製/暫停/等待錨點點擊。
+        採用簡單「彩色圓點」游標（不疊箭頭），避免不同環境游標合成問題。
+        """
+
+        def dot_cursor(color: QColor) -> QCursor:
+            size = 24
+            pm = QPixmap(size, size)
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # outer ring
+            p.setPen(QPen(QColor(0, 0, 0, 180), 2))
+            p.setBrush(color)
+            r = 16
+            x = (size - r) // 2
+            y = (size - r) // 2
+            p.drawEllipse(x, y, r, r)
+            p.end()
+            # hotspot center-ish
+            return QCursor(pm, size // 2, size // 2)
+
+        if self._cursor_rec is None:
+            self._cursor_rec = dot_cursor(QColor(220, 0, 0, 220))
+        if self._cursor_pause is None:
+            self._cursor_pause = dot_cursor(QColor(255, 180, 0, 220))
+        if self._cursor_anchor is None:
+            self._cursor_anchor = dot_cursor(QColor(0, 160, 255, 220))
+
+    def _update_cursor_state(self):
+        """依錄製狀態切換游標。"""
+        self._ensure_status_cursors()
+
+        desired: Optional[QCursor] = None
+        if self.expect_anchor_click:
+            desired = self._cursor_anchor
+        elif self.recording and self.paused:
+            desired = self._cursor_pause
+        elif self.recording:
+            desired = self._cursor_rec
+
+        if desired is None:
+            # restore
+            if self._cursor_overridden:
+                try:
+                    QApplication.restoreOverrideCursor()
+                except Exception:
+                    pass
+                self._cursor_overridden = False
+            return
+
+        # set override
+        try:
+            QApplication.setOverrideCursor(desired)
+            self._cursor_overridden = True
+        except Exception:
+            # if override fails, just ignore
+            self._cursor_overridden = False
+
     def _update_ui_state(self):
         # status
         if self.expect_anchor_click:
@@ -801,6 +868,9 @@ class AutoClickEditor(QMainWindow):
         else:
             self.lbl_status.setText("狀態：idle")
             self.lbl_status.setStyleSheet("font-weight: bold;")
+
+        # cursor
+        self._update_cursor_state()
 
         # buttons enabled
         has_flow = self.current_flow_id is not None
