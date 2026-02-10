@@ -48,6 +48,7 @@ from PySide6.QtCore import Qt, QPoint, QRect
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -55,6 +56,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -261,6 +263,47 @@ class ScreenRegionSelector(QWidget):
         p.drawRect(r)
 
 
+class StepLogWindow(QWidget):
+    """錄製時顯示一個小視窗，持續列出最近的步驟/座標。
+
+    目的：讓使用者確認「點擊有被紀錄」。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("錄製步驟")
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.resize(420, 240)
+
+        layout = QVBoxLayout(self)
+        self.txt = QPlainTextEdit()
+        self.txt.setReadOnly(True)
+        self.txt.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(self.txt)
+
+        self._max_lines = 200
+
+    def append_line(self, line: str):
+        self.txt.appendPlainText(line)
+        # trim lines to keep UI snappy
+        doc = self.txt.document()
+        if doc.blockCount() > self._max_lines:
+            cursor = self.txt.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            # remove first 50 lines
+            for _ in range(50):
+                cursor.select(cursor.SelectionType.LineUnderCursor)
+                cursor.removeSelectedText()
+                cursor.deleteChar()  # newline
+
+        # auto-scroll to bottom
+        self.txt.verticalScrollBar().setValue(self.txt.verticalScrollBar().maximum())
+
+
 class AutoClickEditor(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -290,6 +333,9 @@ class AutoClickEditor(QMainWindow):
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
         self._kb_listener: Optional[keyboard.Listener] = None
+
+        # step log window (small always-on-top)
+        self.step_log = StepLogWindow()
 
         self._build_ui()
         self._update_ui_state()
@@ -357,16 +403,20 @@ class AutoClickEditor(QMainWindow):
         self.btn_set_anchor_click = QPushButton("設定錨點基準點（點一下錨點）")
         self.btn_record = QPushButton("開始錄製")
         self.btn_stop = QPushButton("停止")
+        self.chk_step_log = QCheckBox("顯示錄製步驟視窗")
+        self.chk_step_log.setChecked(True)
         row3.addWidget(self.btn_capture_anchor)
         row3.addWidget(self.btn_set_anchor_click)
         row3.addWidget(self.btn_record)
         row3.addWidget(self.btn_stop)
+        row3.addWidget(self.chk_step_log)
         layout.addLayout(row3)
 
         self.btn_capture_anchor.clicked.connect(self.on_capture_anchor)
         self.btn_set_anchor_click.clicked.connect(self.on_set_anchor_click)
         self.btn_record.clicked.connect(self.on_record)
         self.btn_stop.clicked.connect(self.on_stop)
+        self.chk_step_log.toggled.connect(self._on_toggle_step_log)
 
         # status
         self.lbl_status = QLabel("狀態：idle")
@@ -643,13 +693,36 @@ class AutoClickEditor(QMainWindow):
         self.paused = False
         self._ensure_listeners_running()
         self._show_message("開始錄製：點擊將被記錄；按 F9 暫停/恢復；按『停止』結束")
+        self._show_step_log()
+        try:
+            self.step_log.append_line(f"[{now_utc_iso()}] REC start (flow={self.current_flow_id})")
+        except Exception:
+            pass
         self._update_ui_state()
+
+    def _on_toggle_step_log(self, checked: bool):
+        if not checked:
+            self.step_log.hide()
+        else:
+            # Only show automatically while recording/awaiting anchor
+            if self.recording or self.expect_anchor_click:
+                self._show_step_log()
+
+    def _show_step_log(self):
+        if not getattr(self, "chk_step_log", None) or not self.chk_step_log.isChecked():
+            return
+        if not self.step_log.isVisible():
+            self.step_log.show()
+        self.step_log.raise_()
+        self.step_log.activateWindow()
 
     def on_stop(self):
         self.recording = False
         self.paused = False
         self.expect_anchor_click = False
         self._show_message("已停止")
+        if getattr(self, "chk_step_log", None) and self.chk_step_log.isChecked():
+            self.step_log.hide()
         self._update_ui_state()
 
     # ----------------------- steps editing -----------------------
@@ -772,6 +845,13 @@ class AutoClickEditor(QMainWindow):
                 anch["click_in_image"] = {"x": int(x - rx), "y": int(y - ry)}
                 self.expect_anchor_click = False
                 self._show_message("已設定錨點基準點（anchor_click_xy）")
+                self._show_step_log()
+                try:
+                    self.step_log.append_line(
+                        f"[{now_utc_iso()}] anchor_click_xy=({int(x)},{int(y)}) click_in_image=({int(x-rx)},{int(y-ry)})"
+                    )
+                except Exception:
+                    pass
                 self._update_ui_state()
             return
 
@@ -832,6 +912,16 @@ class AutoClickEditor(QMainWindow):
 
         steps.append(step)
         f["steps"] = steps
+
+        # Step log
+        try:
+            idx = len(steps)
+            self._show_step_log()
+            self.step_log.append_line(
+                f"[{now_utc_iso()}] step{idx:04d} click_xy=({bx},{by}) offset=({offset['x']},{offset['y']}) {btn_name} clicks={clicks}"
+            )
+        except Exception:
+            pass
 
         # UI 更新
         self._refresh_steps_table()
