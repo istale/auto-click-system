@@ -79,6 +79,22 @@ try:
 except Exception:  # pragma: no cover
     Image = None
 
+# Alternative screenshot backend (recommended on Windows/RDP): mss + opencv
+try:
+    import numpy as np  # type: ignore
+except Exception:  # pragma: no cover
+    np = None
+
+try:
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover
+    cv2 = None
+
+try:
+    import mss  # type: ignore
+except Exception:  # pragma: no cover
+    mss = None
+
 try:
     from pynput import keyboard, mouse  # type: ignore
 except Exception:  # pragma: no cover
@@ -139,6 +155,56 @@ def pil_to_qpixmap(img):
     # Make a deep copy because data buffer will be freed with Python object
     qimg = qimg.copy()
     return QPixmap.fromImage(qimg)
+
+
+def bgr_to_qpixmap(bgr):
+    """Convert numpy BGR uint8 image to QPixmap."""
+    if np is None:
+        raise RuntimeError("numpy not available")
+    if bgr is None:
+        raise RuntimeError("image is None")
+    h, w = bgr.shape[:2]
+    if bgr.ndim == 2:
+        rgb = np.stack([bgr, bgr, bgr], axis=2)
+    else:
+        rgb = bgr[:, :, ::-1]
+    qimg = QImage(rgb.data, w, h, int(rgb.strides[0]), QImage.Format.Format_RGB888)
+    qimg = qimg.copy()
+    return QPixmap.fromImage(qimg)
+
+
+def capture_fullscreen_bgr():
+    """Capture fullscreen image as numpy BGR (pixel coordinates).
+
+    Preferred backend: mss (more stable on Windows/RDP).
+    Fallback: pyautogui/PIL.
+
+    Returns (bgr, pixel_w, pixel_h)
+    """
+    # mss path
+    if mss is not None and np is not None and cv2 is not None:
+        try:
+            with mss.mss() as sct:
+                mon = sct.monitors[0]  # virtual screen
+                raw = sct.grab(mon)  # BGRA
+                arr = np.array(raw, dtype=np.uint8)
+                bgr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+                return bgr, int(mon["width"]), int(mon["height"])
+        except Exception:
+            pass
+
+    # fallback: pyautogui
+    if pyautogui is not None and Image is not None and np is not None and cv2 is not None:
+        try:
+            pil = pyautogui.screenshot()
+            rgb = np.array(pil)
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            h, w = bgr.shape[:2]
+            return bgr, int(w), int(h)
+        except Exception:
+            pass
+
+    raise RuntimeError("No screenshot backend available (need mss+opencv+numpy or pyautogui+PIL)")
 
 
 @dataclass
@@ -614,26 +680,29 @@ class AutoClickEditor(QMainWindow):
         self._update_ui_state()
         self.showMinimized()
 
-        # Take a full screenshot first (pyautogui/PIL). This avoids RDP composition issues
+        # Take a full screenshot first (prefer mss+opencv). This avoids RDP composition issues
         # and keeps selection coordinates consistent with the captured pixels.
         bg_pm = None
-        full_img = None
-        if pyautogui is not None and Image is not None:
-            try:
-                full_img = pyautogui.screenshot()  # PIL Image (pixel coordinates)
-                bg_pm = pil_to_qpixmap(full_img)
+        full_bgr = None
+        full_w = None
+        full_h = None
+        try:
+            full_bgr, full_w, full_h = capture_fullscreen_bgr()
+            bg_pm = bgr_to_qpixmap(full_bgr)
 
-                # Compute coordinate scale between Qt virtual desktop (logical) and screenshot pixels.
-                # This matters on Windows DPI scaling (e.g. 125%).
-                v = QGuiApplication.primaryScreen().virtualGeometry()
-                if v.width() > 0 and v.height() > 0:
-                    self._coord_scale_x = float(full_img.size[0]) / float(v.width())
-                    self._coord_scale_y = float(full_img.size[1]) / float(v.height())
-            except Exception:
-                full_img = None
-                bg_pm = None
-                self._coord_scale_x = 1.0
-                self._coord_scale_y = 1.0
+            # Compute coordinate scale between Qt virtual desktop (logical) and screenshot pixels.
+            # This matters on Windows DPI scaling (e.g. 125%).
+            v = QGuiApplication.primaryScreen().virtualGeometry()
+            if v.width() > 0 and v.height() > 0 and full_w and full_h:
+                self._coord_scale_x = float(full_w) / float(v.width())
+                self._coord_scale_y = float(full_h) / float(v.height())
+        except Exception:
+            full_bgr = None
+            bg_pm = None
+            full_w = None
+            full_h = None
+            self._coord_scale_x = 1.0
+            self._coord_scale_y = 1.0
 
         self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
         selector = ScreenRegionSelector(bg=bg_pm)
@@ -664,26 +733,29 @@ class AutoClickEditor(QMainWindow):
         x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
 
         # screenshot: prefer cropping from the full screenshot (if available)
-        if full_img is not None and Image is not None:
+        img = None
+        if full_bgr is not None and np is not None and cv2 is not None:
             try:
                 # rect is in Qt logical coords; convert to screenshot pixel coords
                 px = int(round(x * self._coord_scale_x))
                 py = int(round(y * self._coord_scale_y))
                 pw = int(round(w * self._coord_scale_x))
                 ph = int(round(h * self._coord_scale_y))
-                img = full_img.crop((px, py, px + pw, py + ph))
-                # also update x/y/w/h to pixel space for capture_rect consistency
+                crop = full_bgr[py : py + ph, px : px + pw]
+                # store x/y/w/h in pixel space for capture_rect consistency
                 x, y, w, h = px, py, pw, ph
+                # convert to PIL for saving
+                if Image is not None:
+                    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                    img = Image.fromarray(rgb)
             except Exception:
                 img = None
-        else:
-            img = None
 
         if img is None:
+            # fallback: use pyautogui region capture
             if pyautogui is None:
-                QMessageBox.warning(self, "無法截圖", "pyautogui 無法使用（可能缺少套件或目前環境無桌面 DISPLAY）")
+                QMessageBox.warning(self, "無法截圖", "無法截圖：請安裝 mss+opencv+numpy 或確保 pyautogui 可用")
                 return
-            # fallback: capture region directly
             img = pyautogui.screenshot(region=(x, y, w, h))
 
         anchors_dir = os.path.join(self.project_dir, "anchors")
@@ -974,11 +1046,13 @@ class AutoClickEditor(QMainWindow):
         try:
             # Prefer: crop preview from a fresh full screenshot (pixel space) to avoid DPI/RDP mismatch.
             prev_rel = None
-            if pyautogui is not None and Image is not None:
-                full2 = pyautogui.screenshot()
+            if Image is not None and cv2 is not None and np is not None:
+                full2, _, _ = capture_fullscreen_bgr()
                 left = bx - 15
                 top = by - 15
-                img_prev = full2.crop((left, top, left + 30, top + 30))
+                crop = full2[top : top + 30, left : left + 30]
+                rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                img_prev = Image.fromarray(rgb)
                 img_prev.save(prev_abs)
                 prev_rel = os.path.join("previews", prev_name)
             else:
