@@ -107,7 +107,7 @@ DEFAULT_CONFIDENCE = 0.9
 DEFAULT_GRAYSCALE = True
 
 # preview image (for recorded clicks)
-PREVIEW_SIZE = 75  # requested: 75x75
+PREVIEW_SIZE = 120  # enlarged preview thumbnail (px)
 PREVIEW_HALF = PREVIEW_SIZE // 2  # 37
 
 
@@ -505,7 +505,7 @@ class AutoClickEditor(QMainWindow):
 
         # Steps table
         # 欄位要讓使用者能「驗證錄製結果」：含座標、截圖、與下一步延遲秒數。
-        self.steps_table = QTableWidget(0, 10)
+        self.steps_table = QTableWidget(0, 11)
         self.steps_table.setHorizontalHeaderLabels([
             "#",
             "動作",
@@ -517,6 +517,7 @@ class AutoClickEditor(QMainWindow):
             "clicks",
             "下一步延遲(s)",
             "截圖(preview)",
+            "preview 路徑",
         ])
         layout.addWidget(self.steps_table)
 
@@ -904,7 +905,9 @@ class AutoClickEditor(QMainWindow):
             self.steps_table.setItem(i, 7, QTableWidgetItem(str(st.get("clicks", ""))))
             self.steps_table.setItem(i, 8, QTableWidgetItem(str(st.get("delay_s", ""))))
             prev_path = str(st.get("preview", ""))
-            item_prev = QTableWidgetItem(prev_path)
+
+            # Preview thumbnail column
+            item_prev = QTableWidgetItem("")
             # Show thumbnail directly in table (best-effort)
             try:
                 if prev_path and self.project_dir:
@@ -917,6 +920,9 @@ class AutoClickEditor(QMainWindow):
             except Exception:
                 pass
             self.steps_table.setItem(i, 9, item_prev)
+
+            # Preview path column
+            self.steps_table.setItem(i, 10, QTableWidgetItem(prev_path))
 
         self.steps_table.resizeColumnsToContents()
         try:
