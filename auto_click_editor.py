@@ -403,6 +403,9 @@ class AutoClickEditor(QMainWindow):
         # On Windows (esp. RDP + 125% scaling), pynput coordinates and screenshot pixels can differ.
         self._coord_scale_x: float = 1.0
         self._coord_scale_y: float = 1.0
+        # Heuristic: pynput may report either logical or pixel coordinates depending on DPI awareness.
+        # None=unknown, True=pixel, False=logical
+        self._listener_coords_are_pixels: Optional[bool] = None
 
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
@@ -1031,9 +1034,8 @@ class AutoClickEditor(QMainWindow):
                 r = anch["capture_rect"]
                 rx, ry, rw, rh = int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])
 
-                # Convert listener coords (likely logical) -> screenshot pixel coords
-                px = int(round(x * self._coord_scale_x))
-                py = int(round(y * self._coord_scale_y))
+                # Convert listener coords -> screenshot pixel coords
+                px, py = self._listener_xy_to_pixel(x, y)
 
                 # NOTE: Do NOT enforce "must click inside capture_rect".
                 # Under RDP/HighDPI, users may want to pick a reference point slightly outside the
@@ -1070,9 +1072,8 @@ class AutoClickEditor(QMainWindow):
             return
 
         # build step
-        # Convert listener coords (likely logical) -> screenshot pixel coords
-        bx = int(round(x * self._coord_scale_x))
-        by = int(round(y * self._coord_scale_y))
+        # Convert listener coords -> screenshot pixel coords
+        bx, by = self._listener_xy_to_pixel(x, y)
         ax = int(self.anchor_click_xy["x"])
         ay = int(self.anchor_click_xy["y"])
 
@@ -1232,21 +1233,49 @@ class AutoClickEditor(QMainWindow):
         except Exception:
             self._cursor_overridden = False
 
+    def _listener_xy_to_pixel(self, x: int, y: int) -> tuple[int, int]:
+        """Convert pynput (listener) coordinates to screenshot pixel coordinates.
+
+        Some environments report logical coords (need scaling), others already report pixels.
+        We use a heuristic based on Qt virtualGeometry.
+        """
+        v = QGuiApplication.primaryScreen().virtualGeometry()
+
+        if self._listener_coords_are_pixels is None:
+            # If coordinates exceed logical bounds, they must be pixel coords.
+            if x > v.width() + 2 or y > v.height() + 2:
+                self._listener_coords_are_pixels = True
+            else:
+                self._listener_coords_are_pixels = False
+
+        if self._listener_coords_are_pixels:
+            return int(x), int(y)
+        return int(round(x * self._coord_scale_x)), int(round(y * self._coord_scale_y))
+
+    def _listener_xy_to_logical(self, x: int, y: int) -> tuple[int, int]:
+        """Convert listener coords to Qt logical coords for UI geometry checks."""
+        if self._listener_coords_are_pixels:
+            lx = int(round(x / max(self._coord_scale_x, 1e-6)))
+            ly = int(round(y / max(self._coord_scale_y, 1e-6)))
+            return lx, ly
+        return int(x), int(y)
+
     def _is_point_in_our_windows(self, x: int, y: int) -> bool:
-        """Return True if a global (logical) point falls inside our own windows.
+        """Return True if a point falls inside our own windows.
 
         Used to avoid recording clicks on the editor UI itself (e.g. Stop button).
-        Note: x/y here are the raw pynput coordinates (likely logical coords).
+        x/y are raw listener coordinates.
         """
+        lx, ly = self._listener_xy_to_logical(x, y)
 
         try:
-            if self.frameGeometry().contains(x, y):
+            if self.frameGeometry().contains(lx, ly):
                 return True
         except Exception:
             pass
 
         try:
-            if self.step_log.isVisible() and self.step_log.frameGeometry().contains(x, y):
+            if self.step_log.isVisible() and self.step_log.frameGeometry().contains(lx, ly):
                 return True
         except Exception:
             pass
