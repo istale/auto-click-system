@@ -307,8 +307,10 @@ class ScreenRegionSelector(QWidget):
         p = QPainter(self)
 
         # 1) Draw background screenshot (if available)
+        # Qt 在 High-DPI / RDP 環境下，widget 的 logical size 可能小於截圖的 pixel size。
+        # 這裡把截圖縮放繪製到 widget rect，避免看起來像被放大（只顯示左上角）。
         if self._bg is not None:
-            p.drawPixmap(0, 0, self._bg)
+            p.drawPixmap(self.rect(), self._bg, self._bg.rect())
 
         # 2) Dark overlay
         p.fillRect(self.rect(), QColor(0, 0, 0, 90))
