@@ -256,6 +256,7 @@ class AutoClickEditor(QMainWindow):
         self._cursor_rec: Optional[QCursor] = None
         self._cursor_pause: Optional[QCursor] = None
         self._cursor_anchor: Optional[QCursor] = None
+        self._in_capture_anchor = False
 
         # project
         self.project_dir: Optional[str] = None
@@ -520,6 +521,11 @@ class AutoClickEditor(QMainWindow):
         if not self._require_project():
             return
 
+        # Capture anchor: minimize editor and show crosshair cursor so the user can see the target UI.
+        self._in_capture_anchor = True
+        self._update_ui_state()
+        self.showMinimized()
+
         self._show_message("請用滑鼠拖曳框選錨點圖區域（Esc 取消）")
         selector = ScreenRegionSelector()
         selector.show()
@@ -530,6 +536,16 @@ class AutoClickEditor(QMainWindow):
         while selector.isVisible():
             QApplication.processEvents()
             time.sleep(0.01)
+
+        # Restore editor window and cursor state
+        self._in_capture_anchor = False
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+        self._update_ui_state()
 
         rect = selector.selected_rect
         if rect is None or rect.width() <= 5 or rect.height() <= 5:
@@ -829,7 +845,9 @@ class AutoClickEditor(QMainWindow):
         self._ensure_status_cursors()
 
         desired: Optional[QCursor] = None
-        if self.expect_anchor_click:
+        if self._in_capture_anchor:
+            desired = QCursor(Qt.CursorShape.CrossCursor)
+        elif self.expect_anchor_click:
             desired = self._cursor_anchor
         elif self.recording and self.paused:
             desired = self._cursor_pause
