@@ -525,6 +525,7 @@ class AutoClickEditor(QMainWindow):
         self._calib_timer = QTimer()
         self._calib_timer.setInterval(200)  # 5 FPS
         self._calib_timer.timeout.connect(self._on_calib_tick)
+        self._calib_debug_dumped = False
 
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
@@ -1390,6 +1391,26 @@ class AutoClickEditor(QMainWindow):
             left = int(px) - half
             top = int(py) - half
             bgr = capture_region_bgr(left, top, 300, 300)
+
+            # Debug: dump first calib frame and basic stats
+            try:
+                if not self._calib_debug_dumped:
+                    self._calib_debug_dumped = True
+                    meanv = None
+                    if np is not None:
+                        meanv = float(np.mean(bgr))
+                    outp = None
+                    if self.project_dir:
+                        outp = os.path.join(self.project_dir, "previews", "__calib_debug.png")
+                        ensure_dir(os.path.dirname(outp))
+                        write_png(outp, bgr)
+                    self._show_step_log()
+                    self.step_log.append_line(
+                        f"[{now_utc_iso()}] calib debug: region=({left},{top},300,300) mean={meanv} dump={outp}"
+                    )
+            except Exception:
+                pass
+
             self.calib_window.set_bgr_image(bgr)
         except Exception as e:
             # Best-effort: log once in step log (avoid spamming)
