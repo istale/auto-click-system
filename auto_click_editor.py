@@ -56,7 +56,7 @@ except Exception as e:  # pragma: no cover
     raise SystemExit(1) from e
 
 # GUI
-from PySide6.QtCore import Qt, QPoint, QRect, QObject, Signal, Slot
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -916,6 +916,24 @@ class AutoClickEditor(QMainWindow):
             return
         self.expect_anchor_click = True
         self._ensure_listeners_running()
+
+        # UX: minimize main window and move step log to top-right
+        try:
+            self.showMinimized()
+        except Exception:
+            pass
+        try:
+            self._show_step_log()
+            ag = QGuiApplication.primaryScreen().availableGeometry()
+            self.step_log.adjustSize()
+            w = self.step_log.frameGeometry().width() or self.step_log.width()
+            h = self.step_log.frameGeometry().height() or self.step_log.height()
+            x = ag.x() + ag.width() - w - 10
+            y = ag.y() + 10
+            self.step_log.move(x, y)
+        except Exception:
+            pass
+
         self._show_message("請在螢幕上點一下『錨點圖』對應的元件（基準點）。")
         self._update_ui_state()
 
@@ -951,6 +969,13 @@ class AutoClickEditor(QMainWindow):
     def _on_preview_display_size_changed(self, v: int):
         self.preview_display_size = int(v)
         self._persist_editor_settings_to_doc()
+
+        # Ensure table uses the requested icon size (otherwise icons may stay small).
+        try:
+            self.steps_table.setIconSize(QSize(self.preview_display_size, self.preview_display_size))
+        except Exception:
+            pass
+
         # refresh table icons/row heights
         self._refresh_steps_table()
 
@@ -1080,7 +1105,10 @@ class AutoClickEditor(QMainWindow):
 
         self.steps_table.resizeColumnsToContents()
         try:
+            # Make rows tall enough for preview thumbnails
             self.steps_table.verticalHeader().setDefaultSectionSize(self.preview_display_size + 12)
+            # Also set icon size on the table so icons actually render at the requested size
+            self.steps_table.setIconSize(QSize(self.preview_display_size, self.preview_display_size))
         except Exception:
             pass
 
