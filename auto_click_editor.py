@@ -38,6 +38,12 @@ import os
 import sys
 import time
 import uuid
+
+# Ensure repo root (this file's directory) is on sys.path so local modules can be imported
+# even when launched from a different working directory.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE and _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
