@@ -194,7 +194,8 @@ def bgr_to_qpixmap(bgr):
     if bgr.ndim == 2:
         rgb = np.stack([bgr, bgr, bgr], axis=2)
     else:
-        rgb = bgr[:, :, ::-1]
+        # Ensure contiguous (channel-reverse produces a view that may confuse QImage on some platforms)
+        rgb = np.ascontiguousarray(bgr[:, :, ::-1])
     qimg = QImage(rgb.data, w, h, int(rgb.strides[0]), QImage.Format.Format_RGB888)
     qimg = qimg.copy()
     return QPixmap.fromImage(qimg)
@@ -1390,8 +1391,13 @@ class AutoClickEditor(QMainWindow):
             top = int(py) - half
             bgr = capture_region_bgr(left, top, 300, 300)
             self.calib_window.set_bgr_image(bgr)
-        except Exception:
-            pass
+        except Exception as e:
+            # Best-effort: log once in step log (avoid spamming)
+            try:
+                self._show_step_log()
+                self.step_log.append_line(f"[{now_utc_iso()}] calib preview failed: {e}")
+            except Exception:
+                pass
 
     @Slot(int, int, str, bool)
     def _on_click_gui(self, x: int, y: int, btn_name: str, pressed: bool):
