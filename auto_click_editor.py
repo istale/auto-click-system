@@ -1039,8 +1039,25 @@ class AutoClickEditor(QMainWindow):
         self.recording = True
         self.paused = False
         self._ensure_listeners_running()
+
+        # UX: minimize main window and keep step log at top-right
+        try:
+            self.showMinimized()
+        except Exception:
+            pass
+        try:
+            self._show_step_log()
+            ag = QGuiApplication.primaryScreen().availableGeometry()
+            self.step_log.adjustSize()
+            w = self.step_log.frameGeometry().width() or self.step_log.width()
+            h = self.step_log.frameGeometry().height() or self.step_log.height()
+            x = ag.x() + ag.width() - w - 10
+            y = ag.y() + 10
+            self.step_log.move(x, y)
+        except Exception:
+            pass
+
         self._show_message("開始錄製：點擊將被記錄；按 F9 暫停/恢復；按『停止』結束")
-        self._show_step_log()
         try:
             self.step_log.append_line(f"[{now_utc_iso()}] REC start (flow={self.current_flow_id})")
         except Exception:
