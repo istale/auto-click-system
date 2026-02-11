@@ -662,7 +662,7 @@ class AutoClickEditor(QMainWindow):
 
         # Steps table
         # 欄位要讓使用者能「驗證錄製結果」：含座標、截圖、與下一步延遲秒數。
-        self.steps_table = QTableWidget(0, 11)
+        self.steps_table = QTableWidget(0, 13)
         self.steps_table.setHorizontalHeaderLabels([
             "#",
             "動作",
@@ -675,6 +675,8 @@ class AutoClickEditor(QMainWindow):
             "下一步延遲(s)",
             "截圖(preview)",
             "preview 路徑",
+            "type_purpose",
+            "type_content",
         ])
         layout.addWidget(self.steps_table)
 
@@ -1162,10 +1164,23 @@ class AutoClickEditor(QMainWindow):
     def on_insert_type(self):
         if not self._require_flow_selected():
             return
-        text, ok = QInputDialog.getText(self, "插入文字輸入", "text")
+
+        purpose, ok = QInputDialog.getText(self, "插入文字輸入", "type_purpose（用途/備註，可留空）")
         if not ok:
             return
-        step = {"action": "type", "text": text, "interval_s": 0.02, "delay_s": DEFAULT_DELAY_S}
+
+        content, ok = QInputDialog.getText(self, "插入文字輸入", "type_content（要輸入的文字）")
+        if not ok:
+            return
+
+        step = {
+            "action": "type",
+            "purpose": purpose,
+            # keep spec field name as text for generator compatibility
+            "text": content,
+            "interval_s": 0.02,
+            "delay_s": DEFAULT_DELAY_S,
+        }
         steps = self._current_steps()
         steps.append(step)
         self._set_current_steps(steps)
@@ -1232,6 +1247,14 @@ class AutoClickEditor(QMainWindow):
 
             # Preview path column
             self.steps_table.setItem(i, 10, QTableWidgetItem(prev_path))
+
+            # type fields (for action=type)
+            if st.get("action") == "type":
+                self.steps_table.setItem(i, 11, QTableWidgetItem(str(st.get("purpose", ""))))
+                self.steps_table.setItem(i, 12, QTableWidgetItem(str(st.get("text", ""))))
+            else:
+                self.steps_table.setItem(i, 11, QTableWidgetItem(""))
+                self.steps_table.setItem(i, 12, QTableWidgetItem(""))
 
         self.steps_table.resizeColumnsToContents()
         try:
