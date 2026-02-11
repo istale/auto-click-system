@@ -193,6 +193,21 @@ def bgr_to_qpixmap(bgr):
     return QPixmap.fromImage(qimg)
 
 
+def write_png(path: str, bgr_img) -> None:
+    """Write BGR image to PNG reliably (supports non-ASCII paths on Windows).
+
+    cv2.imwrite may fail silently on Windows when the path contains non-ASCII characters.
+    We use cv2.imencode + binary write instead.
+    """
+    if cv2 is None:
+        raise RuntimeError("opencv-python not available")
+    ok, buf = cv2.imencode(".png", bgr_img)
+    if not ok:
+        raise RuntimeError("cv2.imencode(.png) failed")
+    with open(path, "wb") as f:
+        f.write(buf.tobytes())
+
+
 def capture_fullscreen_bgr():
     """Capture fullscreen image as numpy BGR (pixel coordinates).
 
@@ -865,7 +880,7 @@ class AutoClickEditor(QMainWindow):
         out_name = f"{flow_id}_anchor.png"
         out_abs = os.path.join(anchors_dir, out_name)
         try:
-            cv2.imwrite(out_abs, crop)
+            write_png(out_abs, crop)
         except Exception as e:
             QMessageBox.warning(self, "存檔失敗", f"無法儲存錨點圖：{out_abs}\n{e}")
             return
@@ -1262,10 +1277,16 @@ class AutoClickEditor(QMainWindow):
             if crop.shape[0] != PREVIEW_CROP_SIZE or crop.shape[1] != PREVIEW_CROP_SIZE:
                 crop = cv2.resize(crop, (PREVIEW_CROP_SIZE, PREVIEW_CROP_SIZE), interpolation=cv2.INTER_NEAREST)
 
-            cv2.imwrite(prev_abs, crop)
+            write_png(prev_abs, crop)
             prev_rel = os.path.join("previews", prev_name)
-        except Exception:
+        except Exception as e:
             prev_rel = None
+            try:
+                self._show_step_log()
+                self.step_log.append_line(f"[{now_utc_iso()}] preview save failed: {e}")
+                self.step_log.append_line(f"  path={prev_abs}")
+            except Exception:
+                pass
 
         step = {
             "action": "click",
