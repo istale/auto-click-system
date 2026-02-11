@@ -504,21 +504,16 @@ class AutoClickEditor(QMainWindow):
         self._coord_scale_x: float = 1.0
         self._coord_scale_y: float = 1.0
         # Heuristic: pynput may report either logical or pixel coordinates depending on DPI awareness.
-        # None=unknown, True=pixel, False=logical
-        self._listener_coords_are_pixels: Optional[bool] = None
+        # However, we have validated that raw pynput coords replay correctly via pyautogui in this environment.
+        # So we treat listener coords as *pixel* for recording.
+        self._listener_coords_are_pixels: Optional[bool] = True
 
-        # Preview calibration/display
+        # Preview calibration/display (preview only)
         self.preview_adjust_dx: int = 0
         self.preview_adjust_dy: int = 0
         self.preview_display_size: int = DEFAULT_PREVIEW_DISPLAY_SIZE
 
-        # Recording calibration (affects recorded click coords / offsets)
-        self.record_sx: float = 1.0
-        self.record_sy: float = 1.0
-        self.record_dx: int = 0
-        self.record_dy: int = 0
-
-        # Calibration mode state
+        # Calibration mode state (optional; does NOT affect recording coordinates in this mode)
         self.calib_mode = False
         self._last_move_xy: Optional[tuple[int, int]] = None
         self.calib_window = CalibPreviewWindow(size_px=300)
@@ -594,35 +589,9 @@ class AutoClickEditor(QMainWindow):
         right.addWidget(self.btn_del_flow)
 
         # Preview calibration controls (to compensate remaining coordinate drift)
-        right.addWidget(QLabel("錄製校正 (sx/sy + dx/dy)"))
-        row_cal = QHBoxLayout()
-        self.spin_record_sx = QDoubleSpinBox()
-        self.spin_record_sy = QDoubleSpinBox()
-        for sp in (self.spin_record_sx, self.spin_record_sy):
-            sp.setRange(0.80, 1.20)
-            sp.setSingleStep(0.005)
-            sp.setDecimals(3)
-            sp.setValue(1.0)
-        row_cal.addWidget(QLabel("sx"))
-        row_cal.addWidget(self.spin_record_sx)
-        row_cal.addWidget(QLabel("sy"))
-        row_cal.addWidget(self.spin_record_sy)
-        right.addLayout(row_cal)
+        # Note: recording calibration removed. Raw listener coords are used (validated by simple recorder/replayer).
 
-        row_cal2 = QHBoxLayout()
-        self.spin_record_dx = QSpinBox()
-        self.spin_record_dy = QSpinBox()
-        for sp in (self.spin_record_dx, self.spin_record_dy):
-            sp.setRange(-500, 500)
-            sp.setSingleStep(5)
-            sp.setValue(0)
-        row_cal2.addWidget(QLabel("dx"))
-        row_cal2.addWidget(self.spin_record_dx)
-        row_cal2.addWidget(QLabel("dy"))
-        row_cal2.addWidget(self.spin_record_dy)
-        right.addLayout(row_cal2)
-
-        self.chk_calib_mode = QCheckBox("校正模式 (即時預覽)")
+        self.chk_calib_mode = QCheckBox("校正模式 (即時預覽；不影響錄製座標)")
         self.chk_calib_mode.setChecked(False)
         right.addWidget(self.chk_calib_mode)
 
@@ -651,10 +620,6 @@ class AutoClickEditor(QMainWindow):
         self.spin_preview_dx.valueChanged.connect(self._on_preview_calibration_changed)
         self.spin_preview_dy.valueChanged.connect(self._on_preview_calibration_changed)
 
-        self.spin_record_sx.valueChanged.connect(self._on_record_calibration_changed)
-        self.spin_record_sy.valueChanged.connect(self._on_record_calibration_changed)
-        self.spin_record_dx.valueChanged.connect(self._on_record_calibration_changed)
-        self.spin_record_dy.valueChanged.connect(self._on_record_calibration_changed)
         self.chk_calib_mode.toggled.connect(self._on_toggle_calib_mode)
 
         # Anchor & recording controls
@@ -742,18 +707,9 @@ class AutoClickEditor(QMainWindow):
             dy = int(ed.get("preview_dy") or 0)
             ds = int(ed.get("preview_display_size") or DEFAULT_PREVIEW_DISPLAY_SIZE)
 
-            rsx = float(ed.get("record_sx") or 1.0)
-            rsy = float(ed.get("record_sy") or 1.0)
-            rdx = int(ed.get("record_dx") or 0)
-            rdy = int(ed.get("record_dy") or 0)
-
             self.preview_adjust_dx = dx
             self.preview_adjust_dy = dy
             self.preview_display_size = ds
-            self.record_sx = rsx
-            self.record_sy = rsy
-            self.record_dx = rdx
-            self.record_dy = rdy
 
             # widgets may not exist during early init
             if hasattr(self, "spin_preview_dx"):
@@ -769,19 +725,7 @@ class AutoClickEditor(QMainWindow):
                 self.spin_preview_display.setValue(ds)
                 self.spin_preview_display.blockSignals(False)
 
-            if hasattr(self, "spin_record_sx"):
-                self.spin_record_sx.blockSignals(True)
-                self.spin_record_sy.blockSignals(True)
-                self.spin_record_dx.blockSignals(True)
-                self.spin_record_dy.blockSignals(True)
-                self.spin_record_sx.setValue(rsx)
-                self.spin_record_sy.setValue(rsy)
-                self.spin_record_dx.setValue(rdx)
-                self.spin_record_dy.setValue(rdy)
-                self.spin_record_sx.blockSignals(False)
-                self.spin_record_sy.blockSignals(False)
-                self.spin_record_dx.blockSignals(False)
-                self.spin_record_dy.blockSignals(False)
+            # recording calibration widgets removed (raw listener coords are used)
         except Exception:
             pass
 
@@ -802,10 +746,7 @@ class AutoClickEditor(QMainWindow):
         ed["preview_dy"] = int(self.preview_adjust_dy)
         ed["preview_display_size"] = int(self.preview_display_size)
 
-        ed["record_sx"] = float(self.record_sx)
-        ed["record_sy"] = float(self.record_sy)
-        ed["record_dx"] = int(self.record_dx)
-        ed["record_dy"] = int(self.record_dy)
+        # recording calibration removed: raw listener coords are used for recording
 
     def on_choose_project(self):
         d = QFileDialog.getExistingDirectory(self, "選擇流程包資料夾")
@@ -1660,36 +1601,32 @@ class AutoClickEditor(QMainWindow):
             self._cursor_overridden = False
 
     def _listener_xy_to_pixel(self, x: int, y: int) -> tuple[int, int]:
-        """Convert pynput (listener) coordinates to screenshot pixel coordinates.
+        """Return listener coordinates as pixel coordinates for recording.
 
-        Some environments report logical coords (need scaling), others already report pixels.
-        We use a heuristic based on Qt virtualGeometry.
+        We have validated (simple recorder/replayer) that raw pynput coordinates replay correctly via pyautogui,
+        both locally and over RDP, so we do NOT apply extra scaling/calibration here.
         """
-        v = QGuiApplication.primaryScreen().virtualGeometry()
-
-        if self._listener_coords_are_pixels is None:
-            # If coordinates exceed logical bounds, they must be pixel coords.
-            if x > v.width() + 2 or y > v.height() + 2:
-                self._listener_coords_are_pixels = True
-            else:
-                self._listener_coords_are_pixels = False
-
-        if self._listener_coords_are_pixels:
-            px, py = int(x), int(y)
-        else:
-            px, py = int(round(x * self._coord_scale_x)), int(round(y * self._coord_scale_y))
-
-        # Apply recording calibration (scale + offset)
-        px = int(round(self.record_sx * px + self.record_dx))
-        py = int(round(self.record_sy * py + self.record_dy))
-        return px, py
+        return int(x), int(y)
 
     def _listener_xy_to_logical(self, x: int, y: int) -> tuple[int, int]:
-        """Convert listener coords to Qt logical coords for UI geometry checks."""
-        if self._listener_coords_are_pixels:
-            lx = int(round(x / max(self._coord_scale_x, 1e-6)))
-            ly = int(round(y / max(self._coord_scale_y, 1e-6)))
-            return lx, ly
+        """Convert listener(pixel) coords to Qt logical coords for UI geometry checks.
+
+        This only affects "ignore clicks on our own UI" checks; recording stays in pixel coords.
+        """
+        try:
+            v = QGuiApplication.primaryScreen().virtualGeometry()
+            lw, lh = int(v.width()), int(v.height())
+            # prefer pyautogui pixel size if available
+            pw = ph = None
+            if pyautogui is not None:
+                sz = pyautogui.size()
+                pw, ph = int(sz.width), int(sz.height)
+            if pw and ph and pw > 0 and ph > 0 and lw > 0 and lh > 0:
+                sx = lw / pw
+                sy = lh / ph
+                return int(round(x * sx)), int(round(y * sy))
+        except Exception:
+            pass
         return int(x), int(y)
 
     def _is_point_in_our_windows(self, x: int, y: int) -> bool:
