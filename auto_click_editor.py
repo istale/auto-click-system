@@ -56,11 +56,12 @@ except Exception as e:  # pragma: no cover
     raise SystemExit(1) from e
 
 # GUI
-from PySide6.QtCore import Qt, QPoint, QRect, QSize, QObject, Signal, Slot
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, QObject, Signal, Slot, QTimer
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -212,6 +213,30 @@ def write_png(path: str, bgr_img) -> None:
         raise RuntimeError("cv2.imencode(.png) failed")
     with open(path, "wb") as f:
         f.write(buf.tobytes())
+
+
+def capture_region_bgr(left: int, top: int, width: int, height: int):
+    """Capture a screen region as numpy BGR using mss."""
+    if mss is None or np is None or cv2 is None:
+        raise RuntimeError("Missing deps: mss + numpy + opencv-python are required")
+
+    with mss.mss() as sct:
+        mon0 = sct.monitors[0]
+        # clamp within virtual screen
+        l0 = int(mon0.get("left", 0))
+        t0 = int(mon0.get("top", 0))
+        w0 = int(mon0.get("width"))
+        h0 = int(mon0.get("height"))
+
+        left = clamp(int(left), l0, l0 + w0 - 1)
+        top = clamp(int(top), t0, t0 + h0 - 1)
+        width = clamp(int(width), 1, l0 + w0 - left)
+        height = clamp(int(height), 1, t0 + h0 - top)
+
+        raw = sct.grab({"left": left, "top": top, "width": width, "height": height})  # BGRA
+        arr = np.array(raw, dtype=np.uint8)
+        bgr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+        return bgr
 
 
 def capture_fullscreen_bgr():
@@ -367,6 +392,43 @@ class UiEvents(QObject):
     sig_f9 = Signal()
     sig_f10 = Signal()
     sig_click = Signal(int, int, str, bool)  # x, y, button_name, pressed
+    sig_move = Signal(int, int)  # x, y (raw listener coords)
+
+
+class CalibPreviewWindow(QWidget):
+    """Calibration live preview window (top-right)."""
+
+    def __init__(self, size_px: int = 300):
+        super().__init__()
+        self.setWindowTitle("校正預覽")
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.size_px = int(size_px)
+        self.resize(self.size_px + 16, self.size_px + 16)
+
+        layout = QVBoxLayout(self)
+        self.lbl = QLabel()
+        self.lbl.setFixedSize(self.size_px, self.size_px)
+        self.lbl.setStyleSheet("background: #000;")
+        layout.addWidget(self.lbl)
+
+    def set_bgr_image(self, bgr):
+        # Convert to QPixmap and draw crosshair
+        pm = bgr_to_qpixmap(bgr)
+        pm = pm.scaled(self.size_px, self.size_px, Qt.AspectRatioMode.IgnoreAspectRatio)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(255, 0, 0, 200))
+        pen.setWidth(2)
+        p.setPen(pen)
+        c = self.size_px // 2
+        p.drawLine(0, c, self.size_px, c)
+        p.drawLine(c, 0, c, self.size_px)
+        p.end()
+        self.lbl.setPixmap(pm)
 
 
 class StepLogWindow(QWidget):
@@ -449,6 +511,20 @@ class AutoClickEditor(QMainWindow):
         self.preview_adjust_dy: int = 0
         self.preview_display_size: int = DEFAULT_PREVIEW_DISPLAY_SIZE
 
+        # Recording calibration (affects recorded click coords / offsets)
+        self.record_sx: float = 1.0
+        self.record_sy: float = 1.0
+        self.record_dx: int = 0
+        self.record_dy: int = 0
+
+        # Calibration mode state
+        self.calib_mode = False
+        self._last_move_xy: Optional[tuple[int, int]] = None
+        self.calib_window = CalibPreviewWindow(size_px=300)
+        self._calib_timer = QTimer()
+        self._calib_timer.setInterval(200)  # 5 FPS
+        self._calib_timer.timeout.connect(self._on_calib_tick)
+
         # global listeners
         self._mouse_listener: Optional[mouse.Listener] = None
         self._kb_listener: Optional[keyboard.Listener] = None
@@ -458,6 +534,7 @@ class AutoClickEditor(QMainWindow):
         self._events.sig_f9.connect(self._on_f9_gui)
         self._events.sig_f10.connect(self._on_f10_gui)
         self._events.sig_click.connect(self._on_click_gui)
+        self._events.sig_move.connect(self._on_move_gui)
 
         # step log window (small always-on-top)
         self.step_log = StepLogWindow()
@@ -515,19 +592,51 @@ class AutoClickEditor(QMainWindow):
         right.addWidget(self.btn_del_flow)
 
         # Preview calibration controls (to compensate remaining coordinate drift)
-        right.addWidget(QLabel("Preview 校正 (dx, dy)"))
+        right.addWidget(QLabel("錄製校正 (sx/sy + dx/dy)"))
         row_cal = QHBoxLayout()
+        self.spin_record_sx = QDoubleSpinBox()
+        self.spin_record_sy = QDoubleSpinBox()
+        for sp in (self.spin_record_sx, self.spin_record_sy):
+            sp.setRange(0.80, 1.20)
+            sp.setSingleStep(0.005)
+            sp.setDecimals(3)
+            sp.setValue(1.0)
+        row_cal.addWidget(QLabel("sx"))
+        row_cal.addWidget(self.spin_record_sx)
+        row_cal.addWidget(QLabel("sy"))
+        row_cal.addWidget(self.spin_record_sy)
+        right.addLayout(row_cal)
+
+        row_cal2 = QHBoxLayout()
+        self.spin_record_dx = QSpinBox()
+        self.spin_record_dy = QSpinBox()
+        for sp in (self.spin_record_dx, self.spin_record_dy):
+            sp.setRange(-500, 500)
+            sp.setSingleStep(5)
+            sp.setValue(0)
+        row_cal2.addWidget(QLabel("dx"))
+        row_cal2.addWidget(self.spin_record_dx)
+        row_cal2.addWidget(QLabel("dy"))
+        row_cal2.addWidget(self.spin_record_dy)
+        right.addLayout(row_cal2)
+
+        self.chk_calib_mode = QCheckBox("校正模式 (即時預覽)")
+        self.chk_calib_mode.setChecked(False)
+        right.addWidget(self.chk_calib_mode)
+
+        right.addWidget(QLabel("Preview 校正 (dx, dy)"))
+        row_pcal = QHBoxLayout()
         self.spin_preview_dx = QSpinBox()
         self.spin_preview_dy = QSpinBox()
         for sp in (self.spin_preview_dx, self.spin_preview_dy):
             sp.setRange(-500, 500)
             sp.setSingleStep(5)
             sp.setValue(0)
-        row_cal.addWidget(QLabel("dx"))
-        row_cal.addWidget(self.spin_preview_dx)
-        row_cal.addWidget(QLabel("dy"))
-        row_cal.addWidget(self.spin_preview_dy)
-        right.addLayout(row_cal)
+        row_pcal.addWidget(QLabel("dx"))
+        row_pcal.addWidget(self.spin_preview_dx)
+        row_pcal.addWidget(QLabel("dy"))
+        row_pcal.addWidget(self.spin_preview_dy)
+        right.addLayout(row_pcal)
 
         right.addStretch(1)
         row2.addWidget(self.flow_list, 2)
@@ -539,6 +648,12 @@ class AutoClickEditor(QMainWindow):
         self.flow_list.currentRowChanged.connect(self.on_flow_selected)
         self.spin_preview_dx.valueChanged.connect(self._on_preview_calibration_changed)
         self.spin_preview_dy.valueChanged.connect(self._on_preview_calibration_changed)
+
+        self.spin_record_sx.valueChanged.connect(self._on_record_calibration_changed)
+        self.spin_record_sy.valueChanged.connect(self._on_record_calibration_changed)
+        self.spin_record_dx.valueChanged.connect(self._on_record_calibration_changed)
+        self.spin_record_dy.valueChanged.connect(self._on_record_calibration_changed)
+        self.chk_calib_mode.toggled.connect(self._on_toggle_calib_mode)
 
         # Anchor & recording controls
         row3 = QHBoxLayout()
@@ -625,9 +740,18 @@ class AutoClickEditor(QMainWindow):
             dy = int(ed.get("preview_dy") or 0)
             ds = int(ed.get("preview_display_size") or DEFAULT_PREVIEW_DISPLAY_SIZE)
 
+            rsx = float(ed.get("record_sx") or 1.0)
+            rsy = float(ed.get("record_sy") or 1.0)
+            rdx = int(ed.get("record_dx") or 0)
+            rdy = int(ed.get("record_dy") or 0)
+
             self.preview_adjust_dx = dx
             self.preview_adjust_dy = dy
             self.preview_display_size = ds
+            self.record_sx = rsx
+            self.record_sy = rsy
+            self.record_dx = rdx
+            self.record_dy = rdy
 
             # widgets may not exist during early init
             if hasattr(self, "spin_preview_dx"):
@@ -642,6 +766,20 @@ class AutoClickEditor(QMainWindow):
                 self.spin_preview_display.blockSignals(True)
                 self.spin_preview_display.setValue(ds)
                 self.spin_preview_display.blockSignals(False)
+
+            if hasattr(self, "spin_record_sx"):
+                self.spin_record_sx.blockSignals(True)
+                self.spin_record_sy.blockSignals(True)
+                self.spin_record_dx.blockSignals(True)
+                self.spin_record_dy.blockSignals(True)
+                self.spin_record_sx.setValue(rsx)
+                self.spin_record_sy.setValue(rsy)
+                self.spin_record_dx.setValue(rdx)
+                self.spin_record_dy.setValue(rdy)
+                self.spin_record_sx.blockSignals(False)
+                self.spin_record_sy.blockSignals(False)
+                self.spin_record_dx.blockSignals(False)
+                self.spin_record_dy.blockSignals(False)
         except Exception:
             pass
 
@@ -661,6 +799,11 @@ class AutoClickEditor(QMainWindow):
         ed["preview_dx"] = int(self.preview_adjust_dx)
         ed["preview_dy"] = int(self.preview_adjust_dy)
         ed["preview_display_size"] = int(self.preview_display_size)
+
+        ed["record_sx"] = float(self.record_sx)
+        ed["record_sy"] = float(self.record_sy)
+        ed["record_dx"] = int(self.record_dx)
+        ed["record_dy"] = int(self.record_dy)
 
     def on_choose_project(self):
         d = QFileDialog.getExistingDirectory(self, "選擇流程包資料夾")
@@ -961,6 +1104,33 @@ class AutoClickEditor(QMainWindow):
             pass
         self._update_ui_state()
 
+    def _on_record_calibration_changed(self, _v=None):
+        self.record_sx = float(self.spin_record_sx.value())
+        self.record_sy = float(self.spin_record_sy.value())
+        self.record_dx = int(self.spin_record_dx.value())
+        self.record_dy = int(self.spin_record_dy.value())
+        self._persist_editor_settings_to_doc()
+
+    def _on_toggle_calib_mode(self, checked: bool):
+        self.calib_mode = bool(checked)
+        if self.calib_mode:
+            try:
+                self.calib_window.show()
+                ag = QGuiApplication.primaryScreen().availableGeometry()
+                w = self.calib_window.frameGeometry().width() or self.calib_window.width()
+                x = ag.x() + ag.width() - w - 10
+                y = ag.y() + 10
+                self.calib_window.move(x, y)
+            except Exception:
+                pass
+            self._calib_timer.start()
+        else:
+            self._calib_timer.stop()
+            try:
+                self.calib_window.hide()
+            except Exception:
+                pass
+
     def _on_preview_calibration_changed(self, _v: int):
         self.preview_adjust_dx = int(self.spin_preview_dx.value())
         self.preview_adjust_dy = int(self.spin_preview_dy.value())
@@ -1124,7 +1294,7 @@ class AutoClickEditor(QMainWindow):
             )
             return
         if self._mouse_listener is None:
-            self._mouse_listener = mouse.Listener(on_click=self._on_click)
+            self._mouse_listener = mouse.Listener(on_click=self._on_click, on_move=self._on_move)
             self._mouse_listener.start()
         if self._kb_listener is None:
             self._kb_listener = keyboard.Listener(on_press=self._on_key_press)
@@ -1171,6 +1341,12 @@ class AutoClickEditor(QMainWindow):
         except Exception:
             pass
 
+    def _on_move(self, x, y):
+        try:
+            self._events.sig_move.emit(int(x), int(y))
+        except Exception:
+            pass
+
     @Slot()
     def _on_f9_gui(self):
         if not self.recording:
@@ -1195,6 +1371,27 @@ class AutoClickEditor(QMainWindow):
         except Exception:
             pass
         self.on_stop()
+
+    @Slot(int, int)
+    def _on_move_gui(self, x: int, y: int):
+        self._last_move_xy = (int(x), int(y))
+
+    def _on_calib_tick(self):
+        if not self.calib_mode:
+            return
+        if self._last_move_xy is None:
+            return
+        x, y = self._last_move_xy
+        try:
+            px, py = self._listener_xy_to_pixel(x, y)
+            # capture 300x300 around calibrated pixel coords
+            half = 150
+            left = int(px) - half
+            top = int(py) - half
+            bgr = capture_region_bgr(left, top, 300, 300)
+            self.calib_window.set_bgr_image(bgr)
+        except Exception:
+            pass
 
     @Slot(int, int, str, bool)
     def _on_click_gui(self, x: int, y: int, btn_name: str, pressed: bool):
@@ -1451,8 +1648,14 @@ class AutoClickEditor(QMainWindow):
                 self._listener_coords_are_pixels = False
 
         if self._listener_coords_are_pixels:
-            return int(x), int(y)
-        return int(round(x * self._coord_scale_x)), int(round(y * self._coord_scale_y))
+            px, py = int(x), int(y)
+        else:
+            px, py = int(round(x * self._coord_scale_x)), int(round(y * self._coord_scale_y))
+
+        # Apply recording calibration (scale + offset)
+        px = int(round(self.record_sx * px + self.record_dx))
+        py = int(round(self.record_sy * py + self.record_dy))
+        return px, py
 
     def _listener_xy_to_logical(self, x: int, y: int) -> tuple[int, int]:
         """Convert listener coords to Qt logical coords for UI geometry checks."""
