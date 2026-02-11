@@ -1476,6 +1476,17 @@ class AutoClickEditor(QMainWindow):
             if crop.shape[0] != PREVIEW_CROP_SIZE or crop.shape[1] != PREVIEW_CROP_SIZE:
                 crop = cv2.resize(crop, (PREVIEW_CROP_SIZE, PREVIEW_CROP_SIZE), interpolation=cv2.INTER_NEAREST)
 
+            # Draw a red cross at preview center for visual verification
+            try:
+                c = int(PREVIEW_CROP_SIZE) // 2
+                L = max(6, int(PREVIEW_CROP_SIZE * 0.12))
+                thickness = 2
+                red = (0, 0, 255)  # BGR
+                cv2.line(crop, (c - L, c), (c + L, c), red, thickness)
+                cv2.line(crop, (c, c - L), (c, c + L), red, thickness)
+            except Exception:
+                pass
+
             write_png(prev_abs, crop)
             prev_rel = os.path.join("previews", prev_name)
         except Exception as e:
