@@ -499,6 +499,11 @@ class AutoClickEditor(QMainWindow):
         self.expect_anchor_click = False
         self.anchor_click_xy: Optional[Dict[str, int]] = None
 
+        # pending operations (wait for F9)
+        # - 'capture_anchor': after user presses capture button, wait for F9 then take screenshot and select ROI
+        # - 'set_anchor_basepoint': after user presses set basepoint button, wait for F9 then record current cursor pos
+        self.pending_action: Optional[str] = None
+
         # DPI / scaling bridge between listener coordinates and screenshot pixels.
         # On Windows (esp. RDP + 125% scaling), pynput coordinates and screenshot pixels can differ.
         self._coord_scale_x: float = 1.0
@@ -915,15 +920,30 @@ class AutoClickEditor(QMainWindow):
         if not self._require_project():
             return
 
-        # Capture anchor: minimize editor and show crosshair cursor so the user can see the target UI.
+        # New flow: wait for F9, then take screenshot and let user select ROI.
+        self.pending_action = "capture_anchor"
+
+        # UX: minimize editor so it doesn't cover target UI.
         self._in_capture_anchor = True
         self._update_ui_state()
-        self.showMinimized()
+        try:
+            self.showMinimized()
+        except Exception:
+            pass
 
+        self._show_step_log()
+        try:
+            self.step_log.append_line(f"[{now_utc_iso()}] pending: capture anchor (press F9)")
+        except Exception:
+            pass
+        self._show_message("準備好後按 F9 進入『截取錨點圖』框選（Enter 確認 / Esc 取消）")
+
+    def _do_capture_anchor_after_f9(self):
         # Take a full screenshot (pixel coordinates) using mss+opencv.
         try:
             full_bgr, full_w, full_h = capture_fullscreen_bgr()
         except Exception as e:
+            self.pending_action = None
             self._in_capture_anchor = False
             try:
                 self.showNormal()
@@ -939,20 +959,8 @@ class AutoClickEditor(QMainWindow):
             )
             return
 
-        # Update logical->pixel scale for later click recording conversions.
-        v = QGuiApplication.primaryScreen().virtualGeometry()
-        if v.width() > 0 and v.height() > 0:
-            self._coord_scale_x = float(full_w) / float(v.width())
-            self._coord_scale_y = float(full_h) / float(v.height())
-        else:
-            self._coord_scale_x = 1.0
-            self._coord_scale_y = 1.0
-
         # Persist screen size used for capture into YAML (UI-only).
-        # This allows the runner script to self-check environment consistency.
         try:
-            if self.data.get("global") is None:
-                self.data["global"] = {}
             g = self.data.get("global") if isinstance(self.data.get("global"), dict) else {}
             self.data["global"] = g
             ed = g.get("_editor") if isinstance(g.get("_editor"), dict) else {}
@@ -975,6 +983,7 @@ class AutoClickEditor(QMainWindow):
             x = y = w = h = 0
 
         # Restore editor window and cursor state
+        self.pending_action = None
         self._in_capture_anchor = False
         try:
             self.showNormal()
@@ -1012,15 +1021,10 @@ class AutoClickEditor(QMainWindow):
         f["anchor"] = {
             "image": os.path.join("anchors", out_name),
             "click_in_image": {"x": w // 2, "y": h // 2},
-            # capture_rect stored in screenshot pixel coordinates
             "capture_rect": {"x": x, "y": y, "w": w, "h": h},
-            # UI-only: record DPI scale used during capture for later coordinate conversions
-            "_editor": {
-                "coord_scale_x": self._coord_scale_x,
-                "coord_scale_y": self._coord_scale_y,
-            },
         }
         self._show_message(f"已截取錨點圖：{safe_relpath(out_abs, self.project_dir)}；下一步請設定錨點基準點")
+        self._refresh_steps_table()
         self._update_ui_state()
 
     def on_set_anchor_click(self):
@@ -1030,7 +1034,9 @@ class AutoClickEditor(QMainWindow):
         if not f.get("anchor"):
             QMessageBox.warning(self, "需要錨點圖", "請先截取錨點圖")
             return
-        self.expect_anchor_click = True
+
+        # New flow: wait for F9, then record current cursor position as basepoint.
+        self.pending_action = "set_anchor_basepoint"
         self._ensure_listeners_running()
 
         # UX: minimize main window and move step log to top-right
@@ -1050,7 +1056,101 @@ class AutoClickEditor(QMainWindow):
         except Exception:
             pass
 
-        self._show_message("請在螢幕上點一下『錨點圖』對應的元件（基準點）。")
+        self._show_message("把滑鼠移到『錨點基準點』，按 F9 確認")
+        self._update_ui_state()
+
+    def _do_set_anchor_basepoint_after_f9(self):
+        if not self.current_flow_id:
+            self.pending_action = None
+            return
+        f = self._ensure_flow(self.current_flow_id)
+        anch = f.get("anchor")
+        if not isinstance(anch, dict):
+            self.pending_action = None
+            return
+
+        # Determine cursor position (raw listener coords) from last move
+        if self._last_move_xy is None:
+            self.pending_action = None
+            QMessageBox.warning(self, "無法取得游標座標", "尚未偵測到滑鼠移動，請先移動滑鼠再按 F9")
+            return
+        px, py = self._listener_xy_to_pixel(self._last_move_xy[0], self._last_move_xy[1])
+
+        self.anchor_click_xy = {"x": int(px), "y": int(py)}
+
+        # Update click_in_image if capture_rect exists
+        r = anch.get("capture_rect")
+        if isinstance(r, dict):
+            rx, ry, rw, rh = int(r.get("x", 0)), int(r.get("y", 0)), int(r.get("w", 1)), int(r.get("h", 1))
+            ix = clamp(int(px - rx), 0, max(0, rw - 1))
+            iy = clamp(int(py - ry), 0, max(0, rh - 1))
+            anch["click_in_image"] = {"x": ix, "y": iy}
+
+        # Capture a basepoint preview screenshot (PREVIEW_CROP_SIZE) and save
+        try:
+            full2, fw, fh = capture_fullscreen_bgr()
+            if preview_crop_plan is not None:
+                plan = preview_crop_plan(
+                    click_x=int(px),
+                    click_y=int(py),
+                    screen_w=int(fw),
+                    screen_h=int(fh),
+                    size=int(PREVIEW_CROP_SIZE),
+                    dx=0,
+                    dy=0,
+                )
+                crop = full2[plan.top : plan.bottom, plan.left : plan.right]
+                if plan.pad_left or plan.pad_top or plan.pad_right or plan.pad_bottom:
+                    crop = cv2.copyMakeBorder(
+                        crop,
+                        top=plan.pad_top,
+                        bottom=plan.pad_bottom,
+                        left=plan.pad_left,
+                        right=plan.pad_right,
+                        borderType=cv2.BORDER_CONSTANT,
+                        value=(0, 0, 0),
+                    )
+                if crop.shape[0] != PREVIEW_CROP_SIZE or crop.shape[1] != PREVIEW_CROP_SIZE:
+                    crop = cv2.resize(crop, (PREVIEW_CROP_SIZE, PREVIEW_CROP_SIZE), interpolation=cv2.INTER_NEAREST)
+
+                # draw red crosshair
+                c = int(PREVIEW_CROP_SIZE) // 2
+                L = max(6, int(PREVIEW_CROP_SIZE * 0.12))
+                cv2.line(crop, (c - L, c), (c + L, c), (0, 0, 255), 2)
+                cv2.line(crop, (c, c - L), (c, c + L), (0, 0, 255), 2)
+
+                prevs = os.path.join(self.project_dir, "previews") if self.project_dir else None
+                if prevs:
+                    ensure_dir(prevs)
+                    name = f"{self.current_flow_id}_anchor_basepoint.png"
+                    abs_p = os.path.join(prevs, name)
+                    write_png(abs_p, crop)
+                    anch["basepoint_preview"] = os.path.join("previews", name)
+        except Exception:
+            pass
+
+        self.pending_action = None
+
+        # Restore window
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+        # Auto-start recording
+        self.recording = True
+        self.paused = False
+        self._show_message("已設定錨點基準點，開始錄製（F9 暫停/恢復；F10/停止 結束）")
+        self._show_step_log()
+        try:
+            self.step_log.append_line(f"[{now_utc_iso()}] anchor_click_xy=({int(px)},{int(py)})")
+            self.step_log.append_line(f"[{now_utc_iso()}] REC start (auto)")
+        except Exception:
+            pass
+
+        self._refresh_steps_table()
         self._update_ui_state()
 
     # ----------------------- recording -----------------------
@@ -1182,10 +1282,25 @@ class AutoClickEditor(QMainWindow):
         row = self.steps_table.currentRow()
         if row < 0:
             return
-        steps = self._current_steps()
-        if row >= len(steps):
+
+        # account for reserved rows (anchor image + basepoint preview)
+        reserved = 0
+        try:
+            f = self._ensure_flow(self.current_flow_id) if self.current_flow_id else None
+            anch = f.get("anchor") if isinstance(f, dict) else None
+            if isinstance(anch, dict):
+                reserved = 2
+        except Exception:
+            reserved = 0
+
+        if row < reserved:
             return
-        steps.pop(row)
+
+        steps = self._current_steps()
+        idx = row - reserved
+        if idx < 0 or idx >= len(steps):
+            return
+        steps.pop(idx)
         self._set_current_steps(steps)
         self._refresh_steps_table()
 
@@ -1229,11 +1344,67 @@ class AutoClickEditor(QMainWindow):
 
     def _refresh_steps_table(self):
         self.steps_table.setRowCount(0)
+
+        reserved = 0
+        # Reserved rows: (1) anchor image, (2) anchor basepoint preview
+        if self.current_flow_id:
+            f = self._ensure_flow(self.current_flow_id)
+            anch = f.get("anchor")
+            if isinstance(anch, dict) and self.project_dir:
+                reserved = 2
+
+                # Row 1: anchor image
+                r0 = 0
+                self.steps_table.insertRow(r0)
+                self.steps_table.setItem(r0, 0, QTableWidgetItem("A1"))
+                self.steps_table.setItem(r0, 1, QTableWidgetItem("anchor_image"))
+                # clear other cells
+                for c in range(2, 13):
+                    self.steps_table.setItem(r0, c, QTableWidgetItem(""))
+
+                anchor_rel = str(anch.get("image") or "")
+                self.steps_table.setItem(r0, 10, QTableWidgetItem(anchor_rel))
+                # thumbnail
+                item_prev = QTableWidgetItem("")
+                try:
+                    abs_path = os.path.join(self.project_dir, anchor_rel)
+                    if anchor_rel and os.path.exists(abs_path):
+                        pm = QPixmap(abs_path)
+                        if not pm.isNull():
+                            pm2 = pm.scaled(self.preview_display_size, self.preview_display_size, Qt.AspectRatioMode.KeepAspectRatio)
+                            item_prev.setIcon(QIcon(pm2))
+                except Exception:
+                    pass
+                self.steps_table.setItem(r0, 9, item_prev)
+
+                # Row 2: anchor basepoint preview
+                r1 = 1
+                self.steps_table.insertRow(r1)
+                self.steps_table.setItem(r1, 0, QTableWidgetItem("A2"))
+                self.steps_table.setItem(r1, 1, QTableWidgetItem("anchor_basepoint"))
+                for c in range(2, 13):
+                    self.steps_table.setItem(r1, c, QTableWidgetItem(""))
+
+                bp_rel = str(anch.get("basepoint_preview") or "")
+                self.steps_table.setItem(r1, 10, QTableWidgetItem(bp_rel))
+                item_bp = QTableWidgetItem("")
+                try:
+                    abs_path = os.path.join(self.project_dir, bp_rel)
+                    if bp_rel and os.path.exists(abs_path):
+                        pm = QPixmap(abs_path)
+                        if not pm.isNull():
+                            pm2 = pm.scaled(self.preview_display_size, self.preview_display_size, Qt.AspectRatioMode.KeepAspectRatio)
+                            item_bp.setIcon(QIcon(pm2))
+                except Exception:
+                    pass
+                self.steps_table.setItem(r1, 9, item_bp)
+
         steps = self._current_steps()
         for i, st in enumerate(steps):
-            self.steps_table.insertRow(i)
-            self.steps_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            self.steps_table.setItem(i, 1, QTableWidgetItem(str(st.get("action"))))
+            row = i + reserved
+            self.steps_table.insertRow(row)
+            self.steps_table.setItem(row, 0, QTableWidgetItem(str(i + 1)))
+            self.steps_table.setItem(row, 1, QTableWidgetItem(str(st.get("action"))))
 
             # UI-only metadata (do not affect execution)
             ed = st.get("_editor") if isinstance(st.get("_editor"), dict) else {}
@@ -1243,19 +1414,19 @@ class AutoClickEditor(QMainWindow):
             if isinstance(cxy, dict):
                 cx = str(cxy.get("x", ""))
                 cy = str(cxy.get("y", ""))
-            self.steps_table.setItem(i, 2, QTableWidgetItem(cx))
-            self.steps_table.setItem(i, 3, QTableWidgetItem(cy))
+            self.steps_table.setItem(row, 2, QTableWidgetItem(cx))
+            self.steps_table.setItem(row, 3, QTableWidgetItem(cy))
 
             ox = ""
             oy = ""
             if isinstance(st.get("offset"), dict):
                 ox = str(st["offset"].get("x", ""))
                 oy = str(st["offset"].get("y", ""))
-            self.steps_table.setItem(i, 4, QTableWidgetItem(ox))
-            self.steps_table.setItem(i, 5, QTableWidgetItem(oy))
-            self.steps_table.setItem(i, 6, QTableWidgetItem(str(st.get("button", ""))))
-            self.steps_table.setItem(i, 7, QTableWidgetItem(str(st.get("clicks", ""))))
-            self.steps_table.setItem(i, 8, QTableWidgetItem(str(st.get("delay_s", ""))))
+            self.steps_table.setItem(row, 4, QTableWidgetItem(ox))
+            self.steps_table.setItem(row, 5, QTableWidgetItem(oy))
+            self.steps_table.setItem(row, 6, QTableWidgetItem(str(st.get("button", ""))))
+            self.steps_table.setItem(row, 7, QTableWidgetItem(str(st.get("clicks", ""))))
+            self.steps_table.setItem(row, 8, QTableWidgetItem(str(st.get("delay_s", ""))))
             prev_path = str(st.get("preview", ""))
 
             # Preview thumbnail column
@@ -1271,18 +1442,18 @@ class AutoClickEditor(QMainWindow):
                             item_prev.setIcon(QIcon(pm2))
             except Exception:
                 pass
-            self.steps_table.setItem(i, 9, item_prev)
+            self.steps_table.setItem(row, 9, item_prev)
 
             # Preview path column
-            self.steps_table.setItem(i, 10, QTableWidgetItem(prev_path))
+            self.steps_table.setItem(row, 10, QTableWidgetItem(prev_path))
 
             # type fields (for action=type)
             if st.get("action") == "type":
-                self.steps_table.setItem(i, 11, QTableWidgetItem(str(st.get("purpose", ""))))
-                self.steps_table.setItem(i, 12, QTableWidgetItem(str(st.get("text", ""))))
+                self.steps_table.setItem(row, 11, QTableWidgetItem(str(st.get("purpose", ""))))
+                self.steps_table.setItem(row, 12, QTableWidgetItem(str(st.get("text", ""))))
             else:
-                self.steps_table.setItem(i, 11, QTableWidgetItem(""))
-                self.steps_table.setItem(i, 12, QTableWidgetItem(""))
+                self.steps_table.setItem(row, 11, QTableWidgetItem(""))
+                self.steps_table.setItem(row, 12, QTableWidgetItem(""))
 
         self.steps_table.resizeColumnsToContents()
         try:
@@ -1360,6 +1531,25 @@ class AutoClickEditor(QMainWindow):
 
     @Slot()
     def _on_f9_gui(self):
+        # Pending actions have priority
+        if self.pending_action == "capture_anchor":
+            try:
+                self._show_step_log()
+                self.step_log.append_line(f"[{now_utc_iso()}] F9 -> capture anchor")
+            except Exception:
+                pass
+            self._do_capture_anchor_after_f9()
+            return
+        if self.pending_action == "set_anchor_basepoint":
+            try:
+                self._show_step_log()
+                self.step_log.append_line(f"[{now_utc_iso()}] F9 -> set anchor basepoint")
+            except Exception:
+                pass
+            self._do_set_anchor_basepoint_after_f9()
+            return
+
+        # Otherwise, F9 toggles pause/resume while recording
         if not self.recording:
             return
         self.paused = not self.paused
