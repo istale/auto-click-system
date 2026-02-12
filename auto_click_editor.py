@@ -540,6 +540,12 @@ class AutoClickEditor(QMainWindow):
         self._update_ui_state()
 
     def _new_doc(self) -> Dict[str, Any]:
+        # Default: create 50 empty flows (step1..step50)
+        flows = []
+        for i in range(1, 51):
+            fid = f"step{i}"
+            flows.append({"id": fid, "title": fid, "anchor": None, "steps": []})
+
         return {
             "version": 0,
             "meta": {
@@ -551,7 +557,7 @@ class AutoClickEditor(QMainWindow):
                 "confidence": DEFAULT_CONFIDENCE,
                 "grayscale": DEFAULT_GRAYSCALE,
             },
-            "flows": [],
+            "flows": flows,
         }
 
     def _build_ui(self):
@@ -563,64 +569,23 @@ class AutoClickEditor(QMainWindow):
         # Project controls
         row1 = QHBoxLayout()
         self.btn_choose_project = QPushButton("選擇流程包資料夾")
-        self.btn_new_yaml = QPushButton("新建 flow.yaml")
-        self.btn_open_yaml = QPushButton("開啟 flow.yaml")
         self.btn_save_yaml = QPushButton("儲存")
         self.lbl_project = QLabel("project: (未選擇)")
         row1.addWidget(self.btn_choose_project)
-        row1.addWidget(self.btn_new_yaml)
-        row1.addWidget(self.btn_open_yaml)
         row1.addWidget(self.btn_save_yaml)
         layout.addLayout(row1)
         layout.addWidget(self.lbl_project)
 
         self.btn_choose_project.clicked.connect(self.on_choose_project)
-        self.btn_new_yaml.clicked.connect(self.on_new_yaml)
-        self.btn_open_yaml.clicked.connect(self.on_open_yaml)
         self.btn_save_yaml.clicked.connect(self.on_save_yaml)
 
         # flows list
-        row2 = QHBoxLayout()
         self.flow_list = QListWidget()
-        right = QVBoxLayout()
-        self.btn_add_flow = QPushButton("新增流程")
-        self.btn_del_flow = QPushButton("刪除流程")
-        right.addWidget(self.btn_add_flow)
-        right.addWidget(self.btn_del_flow)
+        self.flow_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.flow_list.itemDoubleClicked.connect(self.on_rename_flow)
+        layout.addWidget(self.flow_list)
 
-        # Preview calibration controls (to compensate remaining coordinate drift)
-        # Note: recording calibration removed. Raw listener coords are used (validated by simple recorder/replayer).
-
-        self.chk_calib_mode = QCheckBox("校正模式 (即時預覽；不影響錄製座標)")
-        self.chk_calib_mode.setChecked(False)
-        right.addWidget(self.chk_calib_mode)
-
-        right.addWidget(QLabel("Preview 校正 (dx, dy)"))
-        row_pcal = QHBoxLayout()
-        self.spin_preview_dx = QSpinBox()
-        self.spin_preview_dy = QSpinBox()
-        for sp in (self.spin_preview_dx, self.spin_preview_dy):
-            sp.setRange(-500, 500)
-            sp.setSingleStep(5)
-            sp.setValue(0)
-        row_pcal.addWidget(QLabel("dx"))
-        row_pcal.addWidget(self.spin_preview_dx)
-        row_pcal.addWidget(QLabel("dy"))
-        row_pcal.addWidget(self.spin_preview_dy)
-        right.addLayout(row_pcal)
-
-        right.addStretch(1)
-        row2.addWidget(self.flow_list, 2)
-        row2.addLayout(right, 1)
-        layout.addLayout(row2)
-
-        self.btn_add_flow.clicked.connect(self.on_add_flow)
-        self.btn_del_flow.clicked.connect(self.on_del_flow)
         self.flow_list.currentRowChanged.connect(self.on_flow_selected)
-        self.spin_preview_dx.valueChanged.connect(self._on_preview_calibration_changed)
-        self.spin_preview_dy.valueChanged.connect(self._on_preview_calibration_changed)
-
-        self.chk_calib_mode.toggled.connect(self._on_toggle_calib_mode)
 
         # Anchor & recording controls
         row3 = QHBoxLayout()
@@ -758,8 +723,37 @@ class AutoClickEditor(QMainWindow):
         ensure_dir(os.path.join(d, "anchors"))
         ensure_dir(os.path.join(d, "previews"))
         self.lbl_project.setText(f"project: {d}")
-        # default yaml path
+
+        # Auto load/create flow.yaml
         self.yaml_path = os.path.join(d, "flow.yaml")
+        if os.path.exists(self.yaml_path):
+            try:
+                with open(self.yaml_path, "r", encoding="utf-8") as f:
+                    self.data = yaml.safe_load(f) or self._new_doc()
+                self._load_editor_settings_from_doc()
+                self.statusBar().showMessage(f"已載入：{self.yaml_path}", 5000)
+            except Exception as e:
+                QMessageBox.warning(self, "載入失敗", f"無法載入 flow.yaml：{self.yaml_path}\n{e}")
+                self.data = self._new_doc()
+        else:
+            self.data = self._new_doc()
+            self._persist_editor_settings_to_doc()
+            # write initial file
+            try:
+                with open(self.yaml_path, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(self.data, f, allow_unicode=True, sort_keys=False)
+                self.statusBar().showMessage(f"已建立：{self.yaml_path}", 5000)
+            except Exception as e:
+                QMessageBox.warning(self, "建立失敗", f"無法建立 flow.yaml：{self.yaml_path}\n{e}")
+
+        self.current_flow_id = None
+        self._refresh_flow_list()
+        self._refresh_steps_table()
+
+        # select first flow
+        if self.flow_list.count() > 0:
+            self.flow_list.setCurrentRow(0)
+
         self._update_ui_state()
 
     def on_new_yaml(self):
@@ -864,6 +858,40 @@ class AutoClickEditor(QMainWindow):
         self._set_flows(flows)
         self.current_flow_id = None
         self._refresh_flow_list()
+        self._refresh_steps_table()
+        self._update_ui_state()
+
+    def on_rename_flow(self, item):
+        # Double-click rename
+        if item is None:
+            return
+        old_id = str(item.text())
+        new_id, ok = QInputDialog.getText(self, "重新命名", f"新名稱（原：{old_id}）")
+        if not ok:
+            return
+        new_id = (new_id or "").strip()
+        if not new_id:
+            return
+        if new_id == old_id:
+            return
+        if self._get_flow(new_id) is not None:
+            QMessageBox.warning(self, "名稱重複", f"已存在流程ID：{new_id}")
+            return
+
+        f = self._get_flow(old_id)
+        if not isinstance(f, dict):
+            return
+        # NOTE: We only rename the id/title in YAML.
+        # If this flow already has assets (anchor/preview filenames), those paths are not renamed automatically.
+        f["id"] = new_id
+        f["title"] = new_id
+
+        self.current_flow_id = new_id
+        self._refresh_flow_list()
+        # re-select
+        items = self.flow_list.findItems(new_id, Qt.MatchFlag.MatchExactly)
+        if items:
+            self.flow_list.setCurrentItem(items[0])
         self._refresh_steps_table()
         self._update_ui_state()
 
