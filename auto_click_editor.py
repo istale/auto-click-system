@@ -922,6 +922,7 @@ class AutoClickEditor(QMainWindow):
 
         # New flow: wait for F9, then take screenshot and let user select ROI.
         self.pending_action = "capture_anchor"
+        self._ensure_listeners_running()
 
         # UX: minimize editor so it doesn't cover target UI.
         self._in_capture_anchor = True
