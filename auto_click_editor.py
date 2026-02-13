@@ -38,6 +38,7 @@ import os
 import sys
 import time
 import uuid
+from datetime import datetime
 
 # Ensure repo root (this file's directory) is on sys.path so local modules can be imported
 # even when launched from a different working directory.
@@ -575,14 +576,17 @@ class AutoClickEditor(QMainWindow):
         row1 = QHBoxLayout()
         self.btn_choose_project = QPushButton("選擇流程包資料夾")
         self.btn_save_yaml = QPushButton("儲存")
+        self.btn_export_script = QPushButton("匯出自動點擊程序檔")
         self.lbl_project = QLabel("project: (未選擇)")
         row1.addWidget(self.btn_choose_project)
         row1.addWidget(self.btn_save_yaml)
+        row1.addWidget(self.btn_export_script)
         layout.addLayout(row1)
         layout.addWidget(self.lbl_project)
 
         self.btn_choose_project.clicked.connect(self.on_choose_project)
         self.btn_save_yaml.clicked.connect(self.on_save_yaml)
+        self.btn_export_script.clicked.connect(self.on_export_script)
 
         # flows list
         self.flow_list = QListWidget()
@@ -800,6 +804,32 @@ class AutoClickEditor(QMainWindow):
         with open(self.yaml_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(self.data, f, allow_unicode=True, sort_keys=False)
         QMessageBox.information(self, "已儲存", f"已儲存：{self.yaml_path}")
+
+    def on_export_script(self):
+        if not self._require_project():
+            return
+        if not self._require_flow_selected():
+            return
+
+        # 1) Save flow.yaml first
+        self.on_save_yaml()
+
+        # 2) Export pyautogui script with timestamp
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        flow_id = self.current_flow_id or "flow"
+        out_name = f"run_{flow_id}_{ts}.py"
+        out_path = os.path.join(self.project_dir, out_name)
+
+        try:
+            # local import (repo root is added to sys.path at startup)
+            from tools.generate_pyautogui_script import generate  # type: ignore
+
+            generate(project_dir=self.project_dir, flow_id=flow_id, out_path=out_path)
+        except Exception as e:
+            QMessageBox.warning(self, "匯出失敗", f"無法匯出 pyautogui script：{out_path}\n{e}")
+            return
+
+        QMessageBox.information(self, "已匯出", f"已匯出：{out_path}")
 
     def _require_project(self) -> bool:
         if not self.project_dir:
