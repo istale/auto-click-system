@@ -577,7 +577,7 @@ class AutoClickEditor(QMainWindow):
         self.btn_choose_project = QPushButton("選擇流程包資料夾")
         self.btn_save_yaml = QPushButton("儲存")
         self.btn_export_script = QPushButton("匯出自動點擊程序檔")
-        self.chk_export_show_desktop = QCheckBox("匯出時先顯示桌面")
+        self.chk_export_show_desktop = QCheckBox("自動點擊前先顯示桌面")
         self.chk_export_show_desktop.setChecked(False)
         self.lbl_project = QLabel("project: (未選擇)")
         row1.addWidget(self.btn_choose_project)
