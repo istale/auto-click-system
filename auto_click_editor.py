@@ -955,7 +955,18 @@ class AutoClickEditor(QMainWindow):
             self._update_ui_state()
             return
         self.current_flow_id = self.flow_list.item(idx).text()
+
+        # Load per-flow anchor basepoint if available
         self.anchor_click_xy = None
+        try:
+            f = self._ensure_flow(self.current_flow_id)
+            anch = f.get("anchor")
+            if isinstance(anch, dict) and isinstance(anch.get("anchor_click_xy"), dict):
+                p = anch.get("anchor_click_xy")
+                self.anchor_click_xy = {"x": int(p.get("x")), "y": int(p.get("y"))}
+        except Exception:
+            self.anchor_click_xy = None
+
         self.expect_anchor_click = False
         self._refresh_steps_table()
         self._update_ui_state()
@@ -1126,6 +1137,7 @@ class AutoClickEditor(QMainWindow):
         px, py = self._listener_xy_to_pixel(self._last_move_xy[0], self._last_move_xy[1])
 
         self.anchor_click_xy = {"x": int(px), "y": int(py)}
+        anch["anchor_click_xy"] = {"x": int(px), "y": int(py)}
 
         # Update click_in_image if capture_rect exists
         r = anch.get("capture_rect")
@@ -1212,7 +1224,7 @@ class AutoClickEditor(QMainWindow):
             QMessageBox.warning(self, "需要錨點圖", "請先截取錨點圖並設定錨點基準點")
             return
         if self.anchor_click_xy is None:
-            QMessageBox.warning(self, "需要錨點基準點", "請先按『設定錨點基準點』並點一下錨點")
+            QMessageBox.warning(self, "需要錨點基準點", "請先按『設定錨點基準點』，把滑鼠移到基準點後按 F9")
             return
 
         self.recording = True
