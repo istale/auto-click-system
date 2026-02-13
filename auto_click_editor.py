@@ -641,6 +641,7 @@ class AutoClickEditor(QMainWindow):
         # Steps table
         # 欄位要讓使用者能「驗證錄製結果」：含座標、截圖、與下一步延遲秒數。
         self.steps_table = QTableWidget(0, 13)
+        self._updating_steps_table = False
         self.steps_table.setHorizontalHeaderLabels([
             "#",
             "動作",
@@ -670,6 +671,7 @@ class AutoClickEditor(QMainWindow):
         self.btn_del_step.clicked.connect(self.on_del_step)
         self.btn_insert_type.clicked.connect(self.on_insert_type)
         self.btn_insert_hotkey.clicked.connect(self.on_insert_hotkey)
+        self.steps_table.itemChanged.connect(self._on_steps_table_item_changed)
 
         # hint
         self.lbl_hint = QLabel("提示：錄製中按 F9 可暫停/恢復（PAUSED 不會寫入 YAML）")
@@ -1406,7 +1408,62 @@ class AutoClickEditor(QMainWindow):
         self._set_current_steps(steps)
         self._refresh_steps_table()
 
+    def _on_steps_table_item_changed(self, item: QTableWidgetItem):
+        # Write-back edits (delay_s, type fields)
+        if self._updating_steps_table:
+            return
+        if not self.current_flow_id:
+            return
+
+        row = item.row()
+        col = item.column()
+
+        # reserved rows (anchor image/basepoint)
+        reserved = 0
+        f = self._ensure_flow(self.current_flow_id)
+        anch = f.get("anchor")
+        if isinstance(anch, dict):
+            reserved = 2
+        if row < reserved:
+            return
+
+        idx = row - reserved
+        steps = list(f.get("steps") or [])
+        if idx < 0 or idx >= len(steps):
+            return
+
+        st = steps[idx]
+        if not isinstance(st, dict):
+            return
+
+        # Column mapping
+        # 8: delay_s
+        # 11: type_purpose
+        # 12: type_content(text)
+        try:
+            if col == 8:
+                v = item.text().strip()
+                delay = int(float(v)) if v else DEFAULT_DELAY_S
+                if delay < 0:
+                    delay = 0
+                st["delay_s"] = delay
+            elif col == 11:
+                if st.get("action") == "type":
+                    st["purpose"] = item.text()
+            elif col == 12:
+                if st.get("action") == "type":
+                    st["text"] = item.text()
+            else:
+                return
+        except Exception:
+            return
+
+        f["steps"] = steps
+        # Optional: refresh to normalize display
+        self._refresh_steps_table()
+
     def _refresh_steps_table(self):
+        self._updating_steps_table = True
         self.steps_table.setRowCount(0)
 
         reserved = 0
@@ -1527,6 +1584,7 @@ class AutoClickEditor(QMainWindow):
             self.steps_table.setIconSize(QSize(self.preview_display_size, self.preview_display_size))
         except Exception:
             pass
+        self._updating_steps_table = False
 
     # ----------------------- listeners -----------------------
 
