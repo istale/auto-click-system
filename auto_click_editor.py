@@ -1248,11 +1248,24 @@ class AutoClickEditor(QMainWindow):
             if self.recording or self.expect_anchor_click:
                 self._show_step_log()
 
+    def _move_step_log_top_right(self):
+        try:
+            ag = QGuiApplication.primaryScreen().availableGeometry()
+            self.step_log.adjustSize()
+            w = self.step_log.frameGeometry().width() or self.step_log.width()
+            x = ag.x() + ag.width() - w - 10
+            y = ag.y() + 10
+            self.step_log.move(x, y)
+        except Exception:
+            pass
+
     def _show_step_log(self):
         if not getattr(self, "chk_step_log", None) or not self.chk_step_log.isChecked():
             return
         if not self.step_log.isVisible():
             self.step_log.show()
+        # Always keep at top-right
+        self._move_step_log_top_right()
         self.step_log.raise_()
         self.step_log.activateWindow()
 
