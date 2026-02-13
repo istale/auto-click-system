@@ -577,16 +577,20 @@ class AutoClickEditor(QMainWindow):
         self.btn_choose_project = QPushButton("選擇流程包資料夾")
         self.btn_save_yaml = QPushButton("儲存")
         self.btn_export_script = QPushButton("匯出自動點擊程序檔")
+        self.chk_export_show_desktop = QCheckBox("匯出時先顯示桌面")
+        self.chk_export_show_desktop.setChecked(False)
         self.lbl_project = QLabel("project: (未選擇)")
         row1.addWidget(self.btn_choose_project)
         row1.addWidget(self.btn_save_yaml)
         row1.addWidget(self.btn_export_script)
+        row1.addWidget(self.chk_export_show_desktop)
         layout.addLayout(row1)
         layout.addWidget(self.lbl_project)
 
         self.btn_choose_project.clicked.connect(self.on_choose_project)
         self.btn_save_yaml.clicked.connect(self.on_save_yaml)
         self.btn_export_script.clicked.connect(self.on_export_script)
+        self.chk_export_show_desktop.toggled.connect(self._on_export_options_changed)
 
         # flows list
         self.flow_list = QListWidget()
@@ -682,10 +686,16 @@ class AutoClickEditor(QMainWindow):
             dx = int(ed.get("preview_dx") or 0)
             dy = int(ed.get("preview_dy") or 0)
             ds = int(ed.get("preview_display_size") or DEFAULT_PREVIEW_DISPLAY_SIZE)
+            esd = bool(ed.get("export_show_desktop") or False)
 
             self.preview_adjust_dx = dx
             self.preview_adjust_dy = dy
             self.preview_display_size = ds
+
+            if hasattr(self, "chk_export_show_desktop"):
+                self.chk_export_show_desktop.blockSignals(True)
+                self.chk_export_show_desktop.setChecked(esd)
+                self.chk_export_show_desktop.blockSignals(False)
 
             # widgets may not exist during early init
             if hasattr(self, "spin_preview_dx"):
@@ -721,6 +731,7 @@ class AutoClickEditor(QMainWindow):
         ed["preview_dx"] = int(self.preview_adjust_dx)
         ed["preview_dy"] = int(self.preview_adjust_dy)
         ed["preview_display_size"] = int(self.preview_display_size)
+        ed["export_show_desktop"] = bool(getattr(self, "chk_export_show_desktop", None) and self.chk_export_show_desktop.isChecked())
 
         # recording calibration removed: raw listener coords are used for recording
 
@@ -1251,6 +1262,10 @@ class AutoClickEditor(QMainWindow):
                 self.calib_window.hide()
             except Exception:
                 pass
+
+    def _on_export_options_changed(self, _checked: bool):
+        # persist to doc so export tool can read it
+        self._persist_editor_settings_to_doc()
 
     def _on_preview_calibration_changed(self, _v: int):
         self.preview_adjust_dx = int(self.spin_preview_dx.value())

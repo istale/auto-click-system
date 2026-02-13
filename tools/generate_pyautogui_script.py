@@ -74,6 +74,8 @@ def generate(project_dir: str, flow_id: str, out_path: str) -> None:
     capture_screen_w = int(capture_screen_w) if capture_screen_w is not None else None
     capture_screen_h = int(capture_screen_h) if capture_screen_h is not None else None
 
+    export_show_desktop = bool(ed.get("export_show_desktop") or False)
+
     flow = _get_flow(doc, flow_id)
     anchor = flow.get("anchor")
     if not isinstance(anchor, dict):
@@ -146,6 +148,17 @@ def generate(project_dir: str, flow_id: str, out_path: str) -> None:
             "                f\"Please run with the same display/RDP scaling settings as when recording.\"\n",
             "            )\n",
             "\n",
+            (
+                "    # optional: show desktop first (Windows)\n"
+                "    try:\n"
+                "        pyautogui.hotkey('win', 'd')\n"
+                "        time.sleep(0.5)\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "\n"
+            )
+            if export_show_desktop
+            else "",
             "    box = locate_anchor(anchor_path, confidence=confidence, grayscale=grayscale)\n",
             "    ax, ay, aw, ah = int(box.left), int(box.top), int(box.width), int(box.height)\n",
             f"    click_in_image = ({cx}, {cy})\n",
