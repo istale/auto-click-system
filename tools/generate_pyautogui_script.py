@@ -52,7 +52,7 @@ def _get_flow(doc: Dict[str, Any], flow_id: str) -> Dict[str, Any]:
     raise SystemExit(f"flow id not found: {flow_id}")
 
 
-def generate(project_dir: str, flow_id: str, out_path: str) -> None:
+def generate(project_dir: str, flow_id: str, out_path: str, export_show_desktop: bool | None = None) -> None:
     yaml_path = os.path.join(project_dir, "flow.yaml")
     doc = _load_yaml(yaml_path)
 
@@ -74,7 +74,8 @@ def generate(project_dir: str, flow_id: str, out_path: str) -> None:
     capture_screen_w = int(capture_screen_w) if capture_screen_w is not None else None
     capture_screen_h = int(capture_screen_h) if capture_screen_h is not None else None
 
-    export_show_desktop = bool(ed.get("export_show_desktop") or False)
+    if export_show_desktop is None:
+        export_show_desktop = bool(ed.get("export_show_desktop") or False)
 
     flow = _get_flow(doc, flow_id)
     anchor = flow.get("anchor")

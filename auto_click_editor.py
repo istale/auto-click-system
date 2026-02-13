@@ -835,7 +835,12 @@ class AutoClickEditor(QMainWindow):
             # local import (repo root is added to sys.path at startup)
             from tools.generate_pyautogui_script import generate  # type: ignore
 
-            generate(project_dir=self.project_dir, flow_id=flow_id, out_path=out_path)
+            generate(
+                project_dir=self.project_dir,
+                flow_id=flow_id,
+                out_path=out_path,
+                export_show_desktop=bool(self.chk_export_show_desktop.isChecked()),
+            )
         except Exception as e:
             QMessageBox.warning(self, "匯出失敗", f"無法匯出 pyautogui script：{out_path}\n{e}")
             return
