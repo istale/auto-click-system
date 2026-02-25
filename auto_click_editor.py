@@ -546,11 +546,11 @@ class AutoClickEditor(QMainWindow):
         self._update_ui_state()
 
     def _new_doc(self) -> Dict[str, Any]:
-        # Default: create 50 empty flows (step1..step50)
+        # Default: create 50 empty flows (flow1..flow50)
         flows = []
         for i in range(1, 51):
-            fid = f"step{i}"
-            flows.append({"id": fid, "title": fid, "anchor": None, "steps": []})
+            fid = f"flow{i}"
+            flows.append({"id": fid, "title": fid, "anchor": None, "steps": [], "show_desktop": False, "export": True})
 
         return {
             "version": 0,
@@ -577,28 +577,28 @@ class AutoClickEditor(QMainWindow):
         self.btn_choose_project = QPushButton("選擇流程包資料夾")
         self.btn_save_yaml = QPushButton("儲存")
         self.btn_export_script = QPushButton("匯出自動點擊程序檔")
-        self.chk_export_show_desktop = QCheckBox("自動點擊前先顯示桌面")
-        self.chk_export_show_desktop.setChecked(False)
         self.lbl_project = QLabel("project: (未選擇)")
         row1.addWidget(self.btn_choose_project)
         row1.addWidget(self.btn_save_yaml)
         row1.addWidget(self.btn_export_script)
-        row1.addWidget(self.chk_export_show_desktop)
         layout.addLayout(row1)
         layout.addWidget(self.lbl_project)
 
         self.btn_choose_project.clicked.connect(self.on_choose_project)
         self.btn_save_yaml.clicked.connect(self.on_save_yaml)
         self.btn_export_script.clicked.connect(self.on_export_script)
-        self.chk_export_show_desktop.toggled.connect(self._on_export_options_changed)
 
-        # flows list
-        self.flow_list = QListWidget()
-        self.flow_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.flow_list.itemDoubleClicked.connect(self.on_rename_flow)
-        layout.addWidget(self.flow_list)
-
-        self.flow_list.currentRowChanged.connect(self.on_flow_selected)
+        # flows table (流程 / 顯示桌面 / 匯出)
+        self.flows_table = QTableWidget(0, 3)
+        self.flows_table.setHorizontalHeaderLabels(["流程", "顯示桌面", "匯出"])
+        self.flows_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.flows_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.flows_table.verticalHeader().setVisible(False)
+        self.flows_table.horizontalHeader().setStretchLastSection(True)
+        self.flows_table.itemChanged.connect(self._on_flows_table_item_changed)
+        self.flows_table.currentCellChanged.connect(self._on_flows_table_current_changed)
+        self.flows_table.cellDoubleClicked.connect(self._on_flows_table_double_clicked)
+        layout.addWidget(self.flows_table)
 
         # Anchor & recording controls
         row3 = QHBoxLayout()
@@ -688,16 +688,10 @@ class AutoClickEditor(QMainWindow):
             dx = int(ed.get("preview_dx") or 0)
             dy = int(ed.get("preview_dy") or 0)
             ds = int(ed.get("preview_display_size") or DEFAULT_PREVIEW_DISPLAY_SIZE)
-            esd = bool(ed.get("export_show_desktop") or False)
 
             self.preview_adjust_dx = dx
             self.preview_adjust_dy = dy
             self.preview_display_size = ds
-
-            if hasattr(self, "chk_export_show_desktop"):
-                self.chk_export_show_desktop.blockSignals(True)
-                self.chk_export_show_desktop.setChecked(esd)
-                self.chk_export_show_desktop.blockSignals(False)
 
             # widgets may not exist during early init
             if hasattr(self, "spin_preview_dx"):
@@ -733,7 +727,6 @@ class AutoClickEditor(QMainWindow):
         ed["preview_dx"] = int(self.preview_adjust_dx)
         ed["preview_dy"] = int(self.preview_adjust_dy)
         ed["preview_display_size"] = int(self.preview_display_size)
-        ed["export_show_desktop"] = bool(getattr(self, "chk_export_show_desktop", None) and self.chk_export_show_desktop.isChecked())
 
         # recording calibration removed: raw listener coords are used for recording
 
@@ -773,8 +766,8 @@ class AutoClickEditor(QMainWindow):
         self._refresh_steps_table()
 
         # select first flow
-        if self.flow_list.count() > 0:
-            self.flow_list.setCurrentRow(0)
+        if hasattr(self, "flows_table") and self.flows_table.rowCount() > 0:
+            self.flows_table.setCurrentCell(0, 0)
 
         self._update_ui_state()
 
@@ -818,36 +811,62 @@ class AutoClickEditor(QMainWindow):
             yaml.safe_dump(self.data, f, allow_unicode=True, sort_keys=False)
         QMessageBox.information(self, "已儲存", f"已儲存：{self.yaml_path}")
 
+    def _save_yaml_quiet(self):
+        """Save YAML without popping dialogs (used for checkbox persistence)."""
+        if not self.project_dir:
+            return
+        if not self.yaml_path:
+            self.yaml_path = os.path.join(self.project_dir, "flow.yaml")
+        try:
+            self._persist_editor_settings_to_doc()
+        except Exception:
+            pass
+        with open(self.yaml_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(self.data, f, allow_unicode=True, sort_keys=False)
+        try:
+            self.statusBar().showMessage(f"已儲存：{self.yaml_path}", 3000)
+        except Exception:
+            pass
+
     def on_export_script(self):
         if not self._require_project():
-            return
-        if not self._require_flow_selected():
             return
 
         # 1) Save flow.yaml first
         self.on_save_yaml()
 
-        # 2) Export pyautogui script with timestamp
+        # 2) Collect flows marked for export (default True if missing)
+        flow_ids: List[str] = []
+        for f in self._flows():
+            if not isinstance(f, dict):
+                continue
+            if bool(f.get("export") if "export" in f else True):
+                fid = str(f.get("id") or "")
+                if fid:
+                    flow_ids.append(fid)
+
+        if not flow_ids:
+            QMessageBox.warning(self, "無需匯出", "沒有任何流程勾選『匯出』")
+            return
+
+        # 3) Export combined pyautogui script with timestamp
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        flow_id = self.current_flow_id or "flow"
-        out_name = f"run_{flow_id}_{ts}.py"
+        out_name = f"run_{len(flow_ids)}flows_{ts}.py"
         out_path = os.path.join(self.project_dir, out_name)
 
         try:
-            # local import (repo root is added to sys.path at startup)
-            from tools.generate_pyautogui_script import generate  # type: ignore
+            from tools.generate_pyautogui_script import generate_multiple  # type: ignore
 
-            generate(
+            generate_multiple(
                 project_dir=self.project_dir,
-                flow_id=flow_id,
+                flow_ids=flow_ids,
                 out_path=out_path,
-                export_show_desktop=bool(self.chk_export_show_desktop.isChecked()),
             )
         except Exception as e:
             QMessageBox.warning(self, "匯出失敗", f"無法匯出 pyautogui script：{out_path}\n{e}")
             return
 
-        QMessageBox.information(self, "已匯出", f"已匯出：{out_path}")
+        QMessageBox.information(self, "已匯出", f"已匯出 {len(flow_ids)} 個流程：{out_path}")
 
     def _require_project(self) -> bool:
         if not self.project_dir:
@@ -873,18 +892,90 @@ class AutoClickEditor(QMainWindow):
         f = self._get_flow(flow_id)
         if f is not None:
             return f
-        f = {"id": flow_id, "title": flow_id, "anchor": None, "steps": []}
+        f = {"id": flow_id, "title": flow_id, "anchor": None, "steps": [], "show_desktop": False, "export": True}
         flows = self._flows()
         flows.append(f)
         self._set_flows(flows)
         return f
 
     def _refresh_flow_list(self):
-        self.flow_list.blockSignals(True)
-        self.flow_list.clear()
+        """Refresh flows table from YAML doc."""
+        if not hasattr(self, "flows_table"):
+            return
+
+        self.flows_table.blockSignals(True)
+        self.flows_table.setRowCount(0)
+
         for f in self._flows():
-            self.flow_list.addItem(str(f.get("id")))
-        self.flow_list.blockSignals(False)
+            row = self.flows_table.rowCount()
+            self.flows_table.insertRow(row)
+
+            fid = str(f.get("id") or "")
+            item_id = QTableWidgetItem(fid)
+            item_id.setFlags(item_id.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.flows_table.setItem(row, 0, item_id)
+
+            # show_desktop
+            item_sd = QTableWidgetItem("")
+            item_sd.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable)
+            item_sd.setCheckState(Qt.CheckState.Checked if bool(f.get("show_desktop") or False) else Qt.CheckState.Unchecked)
+            self.flows_table.setItem(row, 1, item_sd)
+
+            # export (default True for backward compatibility)
+            export_val = bool(f.get("export") if "export" in f else True)
+            item_ex = QTableWidgetItem("")
+            item_ex.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable)
+            item_ex.setCheckState(Qt.CheckState.Checked if export_val else Qt.CheckState.Unchecked)
+            self.flows_table.setItem(row, 2, item_ex)
+
+        self.flows_table.blockSignals(False)
+
+        # Resize columns a bit
+        try:
+            self.flows_table.resizeColumnsToContents()
+        except Exception:
+            pass
+
+    def _on_flows_table_current_changed(self, row: int, col: int, prev_row: int, prev_col: int):
+        # Only react to row change
+        if row != prev_row:
+            self.on_flow_selected(row)
+
+    def _on_flows_table_item_changed(self, item: QTableWidgetItem):
+        """Persist checkbox changes into YAML so they are restored on next open."""
+        if not item or not hasattr(self, "flows_table"):
+            return
+        row = item.row()
+        col = item.column()
+        if col not in (1, 2):
+            return
+        id_item = self.flows_table.item(row, 0)
+        if not id_item:
+            return
+        flow_id = id_item.text()
+        f = self._get_flow(flow_id)
+        if not isinstance(f, dict):
+            return
+
+        if col == 1:
+            f["show_desktop"] = item.checkState() == Qt.CheckState.Checked
+        elif col == 2:
+            f["export"] = item.checkState() == Qt.CheckState.Checked
+
+        # Save immediately (so next open restores state) without dialogs
+        try:
+            self._save_yaml_quiet()
+        except Exception:
+            pass
+
+    def _on_flows_table_double_clicked(self, row: int, col: int):
+        # Double click on flow id to rename
+        if col != 0:
+            return
+        it = self.flows_table.item(row, 0)
+        if not it:
+            return
+        self.on_rename_flow(it)
 
     def on_add_flow(self):
         if not self._require_project():
@@ -895,16 +986,21 @@ class AutoClickEditor(QMainWindow):
         flow_id = flow_id.strip()
         self._ensure_flow(flow_id)
         self._refresh_flow_list()
-        # select
-        items = self.flow_list.findItems(flow_id, Qt.MatchFlag.MatchExactly)
-        if items:
-            self.flow_list.setCurrentItem(items[0])
+        # select newly added row
+        for r in range(self.flows_table.rowCount()):
+            it = self.flows_table.item(r, 0)
+            if it and it.text() == flow_id:
+                self.flows_table.setCurrentCell(r, 0)
+                break
 
     def on_del_flow(self):
-        row = self.flow_list.currentRow()
+        row = self.flows_table.currentRow() if hasattr(self, "flows_table") else -1
         if row < 0:
             return
-        flow_id = self.flow_list.currentItem().text()
+        it = self.flows_table.item(row, 0)
+        if not it:
+            return
+        flow_id = it.text()
         if QMessageBox.question(self, "刪除流程", f"確定刪除流程 {flow_id}？") != QMessageBox.StandardButton.Yes:
             return
         flows = [f for f in self._flows() if f.get("id") != flow_id]
@@ -942,19 +1038,28 @@ class AutoClickEditor(QMainWindow):
         self.current_flow_id = new_id
         self._refresh_flow_list()
         # re-select
-        items = self.flow_list.findItems(new_id, Qt.MatchFlag.MatchExactly)
-        if items:
-            self.flow_list.setCurrentItem(items[0])
+        for r in range(self.flows_table.rowCount()):
+            it = self.flows_table.item(r, 0)
+            if it and it.text() == new_id:
+                self.flows_table.setCurrentCell(r, 0)
+                break
         self._refresh_steps_table()
         self._update_ui_state()
 
     def on_flow_selected(self, idx: int):
-        if idx < 0:
+        # idx is the selected row index in flows_table
+        if idx < 0 or not hasattr(self, "flows_table"):
             self.current_flow_id = None
             self._refresh_steps_table()
             self._update_ui_state()
             return
-        self.current_flow_id = self.flow_list.item(idx).text()
+        it = self.flows_table.item(idx, 0)
+        if not it:
+            self.current_flow_id = None
+            self._refresh_steps_table()
+            self._update_ui_state()
+            return
+        self.current_flow_id = it.text()
 
         # Load per-flow anchor basepoint if available
         self.anchor_click_xy = None

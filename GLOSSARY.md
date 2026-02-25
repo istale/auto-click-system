@@ -61,9 +61,13 @@
 
 ### YAML 流程檔（flow.yaml）
 - 定義：自動點擊流程的唯一資料來源（供其他流程串接與 pyautogui script 產生）。
+- flow 層級欄位（`flows[i]`）：
+  - `show_desktop: boolean`：執行該 flow 前是否先顯示桌面（Windows：Win+D）。
+  - `export: boolean`：匯出腳本時是否包含該 flow（用來記錄 UI 上「匯出」勾選狀態，方便下次開啟帶入）。
 
 ### pyautogui script
 - 定義：由 YAML 流程檔轉換產生的 Python 腳本，用於實際自動點擊。
+- 行為：匯出多 flow 時，會依序執行 `export=true` 的 flows（順序以 YAML 內 flows 出現順序為準）。
 
 ---
 

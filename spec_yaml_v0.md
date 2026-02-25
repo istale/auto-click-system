@@ -34,6 +34,21 @@
 ---
 
 ## Spec v0（YAML 結構）
+
+### Flow 層級控制欄位（v0 擴充）
+- `show_desktop: boolean`
+  - 定義：執行該 flow 前是否先顯示桌面（Windows：Win+D）
+  - 預設：`false`（若欄位缺省）
+- `export: boolean`
+  - 定義：匯出腳本時是否包含該 flow（用來記錄 UI 上「匯出」勾選狀態，方便下次開啟帶入）
+  - 預設：`true`（為向下相容；舊 YAML 若缺省則視為 true）
+
+### 匯出腳本行為（v0 擴充）
+- 匯出時會依序串接所有 `export=true` 的 flows
+- 串接順序：以 YAML 中 `flows` 出現順序為準
+- 對每個 flow：若 `show_desktop=true`，則在該 flow 開始前執行一次 Win+D
+
+## Spec v0（YAML 結構）
 ```yaml
 version: 0
 meta:
@@ -50,6 +65,10 @@ global:
 flows:
   - id: flow1
     title: "某視窗流程"
+
+    # Flow 層級控制（v0 擴充）
+    show_desktop: false   # 執行該 flow 前是否先顯示桌面（Windows：Win+D）
+    export: true          # 匯出腳本時是否包含該 flow（UI 勾選狀態會寫回 YAML）
 
     anchor:
       image: "anchors/flow1_anchor.png"

@@ -39,6 +39,10 @@ py auto_click_editor.py
 - 錄製點擊（button / double click / offset / 30×30 預覽圖）
 - F9 toggle 暫停/恢復（編輯器顯示 PAUSED；不寫入 YAML）
 - 半自動鍵盤步驟：在編輯器內插入 type / hotkey
+- Flow 表格欄位：
+  - 顯示桌面：對應 `flows[i].show_desktop`
+  - 匯出：對應 `flows[i].export`（會寫入 YAML，下次開啟可帶入）
+- 匯出腳本：會依序串接匯出所有 `export=true` 的 flows
 
 ## 範例流程包
 - `EXAMPLE_PROJECT/`
