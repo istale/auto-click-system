@@ -1337,17 +1337,16 @@ class AutoClickEditor(QMainWindow):
 
         self.pending_action = None
 
-        # Restore window
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-
         # Auto-start recording
         self.recording = True
         self.paused = False
+
+        # Keep main window minimized during recording (same behavior as manual "開始錄製").
+        try:
+            self.showMinimized()
+        except Exception:
+            pass
+
         self._show_message("已設定錨點基準點，開始錄製（F9 暫停/恢復；F10/停止 結束）")
         self._show_step_log()
         try:
@@ -1905,6 +1904,11 @@ class AutoClickEditor(QMainWindow):
 
         # Do not record clicks on our own UI (e.g. Stop button, step log window).
         if (self.recording and not self.paused) and self._is_point_in_our_windows(x, y):
+            # Keep editor out of the way while recording.
+            try:
+                self.showMinimized()
+            except Exception:
+                pass
             return
 
         # anchor click setup
