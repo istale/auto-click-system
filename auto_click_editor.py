@@ -550,7 +550,7 @@ class AutoClickEditor(QMainWindow):
         flows = []
         for i in range(1, 51):
             fid = f"flow{i}"
-            flows.append({"id": fid, "title": fid, "anchor": None, "steps": [], "show_desktop": False, "export": True})
+            flows.append({"id": fid, "title": fid, "anchor": None, "steps": [], "show_desktop": False, "export": (i == 1)})
 
         return {
             "version": 0,
@@ -574,16 +574,19 @@ class AutoClickEditor(QMainWindow):
 
         # Project controls
         row1 = QHBoxLayout()
+        self.btn_create_project = QPushButton("建立新流程包")
         self.btn_choose_project = QPushButton("選擇流程包資料夾")
         self.btn_save_yaml = QPushButton("儲存")
         self.btn_export_script = QPushButton("匯出自動點擊程序檔")
         self.lbl_project = QLabel("project: (未選擇)")
+        row1.addWidget(self.btn_create_project)
         row1.addWidget(self.btn_choose_project)
         row1.addWidget(self.btn_save_yaml)
         row1.addWidget(self.btn_export_script)
         layout.addLayout(row1)
         layout.addWidget(self.lbl_project)
 
+        self.btn_create_project.clicked.connect(self.on_create_project)
         self.btn_choose_project.clicked.connect(self.on_choose_project)
         self.btn_save_yaml.clicked.connect(self.on_save_yaml)
         self.btn_export_script.clicked.connect(self.on_export_script)
@@ -594,7 +597,11 @@ class AutoClickEditor(QMainWindow):
         self.flows_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.flows_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.flows_table.verticalHeader().setVisible(False)
-        self.flows_table.horizontalHeader().setStretchLastSection(True)
+        # 流程欄位預設放大（約原先的 3 倍）
+        self.flows_table.setColumnWidth(0, 360)
+        self.flows_table.setColumnWidth(1, 90)
+        self.flows_table.setColumnWidth(2, 90)
+        self.flows_table.horizontalHeader().setStretchLastSection(False)
         self.flows_table.itemChanged.connect(self._on_flows_table_item_changed)
         self.flows_table.currentCellChanged.connect(self._on_flows_table_current_changed)
         self.flows_table.cellDoubleClicked.connect(self._on_flows_table_double_clicked)
@@ -730,10 +737,40 @@ class AutoClickEditor(QMainWindow):
 
         # recording calibration removed: raw listener coords are used for recording
 
+    def on_create_project(self):
+        """建立新流程包資料夾，並立即載入。"""
+        parent = QFileDialog.getExistingDirectory(self, "選擇上層資料夾")
+        if not parent:
+            return
+
+        name, ok = QInputDialog.getText(self, "建立新流程包", "新流程包名稱")
+        if not ok:
+            return
+        name = (name or "").strip()
+        if not name:
+            return
+
+        d = os.path.join(parent, name)
+        if os.path.exists(d):
+            QMessageBox.warning(self, "建立失敗", f"資料夾已存在：{d}")
+            return
+
+        try:
+            os.makedirs(d, exist_ok=False)
+        except Exception as e:
+            QMessageBox.warning(self, "建立失敗", f"無法建立資料夾：{d}\n{e}")
+            return
+
+        # 建立後直接當作 project 載入（複用 on_choose_project 的邏輯）
+        self._load_project_dir(d)
+
     def on_choose_project(self):
         d = QFileDialog.getExistingDirectory(self, "選擇流程包資料夾")
         if not d:
             return
+        self._load_project_dir(d)
+
+    def _load_project_dir(self, d: str):
         self.project_dir = d
         ensure_dir(os.path.join(d, "anchors"))
         ensure_dir(os.path.join(d, "previews"))
@@ -892,7 +929,7 @@ class AutoClickEditor(QMainWindow):
         f = self._get_flow(flow_id)
         if f is not None:
             return f
-        f = {"id": flow_id, "title": flow_id, "anchor": None, "steps": [], "show_desktop": False, "export": True}
+        f = {"id": flow_id, "title": flow_id, "anchor": None, "steps": [], "show_desktop": False, "export": False}
         flows = self._flows()
         flows.append(f)
         self._set_flows(flows)
@@ -930,9 +967,12 @@ class AutoClickEditor(QMainWindow):
 
         self.flows_table.blockSignals(False)
 
-        # Resize columns a bit
+        # 欄寬：流程欄位預設放大
         try:
             self.flows_table.resizeColumnsToContents()
+            self.flows_table.setColumnWidth(0, 360)
+            self.flows_table.setColumnWidth(1, max(self.flows_table.columnWidth(1), 90))
+            self.flows_table.setColumnWidth(2, max(self.flows_table.columnWidth(2), 90))
         except Exception:
             pass
 
