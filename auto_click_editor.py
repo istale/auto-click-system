@@ -497,6 +497,7 @@ class AutoClickEditor(QMainWindow):
         # recording
         self.recording = False
         self.paused = False
+        self.record_insert_mode = False
         self.expect_anchor_click = False
         self.anchor_click_xy: Optional[Dict[str, int]] = None
 
@@ -612,12 +613,14 @@ class AutoClickEditor(QMainWindow):
         self.btn_capture_anchor = QPushButton("截取錨點圖")
         self.btn_set_anchor_click = QPushButton("設定錨點基準點（點一下錨點）")
         self.btn_record = QPushButton("開始錄製")
+        self.btn_record_insert = QPushButton("錄製插入步驟")
         self.btn_stop = QPushButton("停止")
         self.chk_step_log = QCheckBox("顯示錄製步驟視窗")
         self.chk_step_log.setChecked(True)
         row3.addWidget(self.btn_capture_anchor)
         row3.addWidget(self.btn_set_anchor_click)
         row3.addWidget(self.btn_record)
+        row3.addWidget(self.btn_record_insert)
         row3.addWidget(self.btn_stop)
         row3.addWidget(self.chk_step_log)
         layout.addLayout(row3)
@@ -625,6 +628,7 @@ class AutoClickEditor(QMainWindow):
         self.btn_capture_anchor.clicked.connect(self.on_capture_anchor)
         self.btn_set_anchor_click.clicked.connect(self.on_set_anchor_click)
         self.btn_record.clicked.connect(self.on_record)
+        self.btn_record_insert.clicked.connect(self.on_record_insert)
         self.btn_stop.clicked.connect(self.on_stop)
         self.chk_step_log.toggled.connect(self._on_toggle_step_log)
 
@@ -668,14 +672,20 @@ class AutoClickEditor(QMainWindow):
 
         row4 = QHBoxLayout()
         self.btn_del_step = QPushButton("刪除選取步驟")
+        self.btn_move_step_up = QPushButton("步驟上移")
+        self.btn_move_step_down = QPushButton("步驟下移")
         self.btn_insert_type = QPushButton("插入文字輸入")
         self.btn_insert_hotkey = QPushButton("插入快捷鍵")
         row4.addWidget(self.btn_del_step)
+        row4.addWidget(self.btn_move_step_up)
+        row4.addWidget(self.btn_move_step_down)
         row4.addWidget(self.btn_insert_type)
         row4.addWidget(self.btn_insert_hotkey)
         layout.addLayout(row4)
 
         self.btn_del_step.clicked.connect(self.on_del_step)
+        self.btn_move_step_up.clicked.connect(self.on_move_step_up)
+        self.btn_move_step_down.clicked.connect(self.on_move_step_down)
         self.btn_insert_type.clicked.connect(self.on_insert_type)
         self.btn_insert_hotkey.clicked.connect(self.on_insert_hotkey)
         self.steps_table.itemChanged.connect(self._on_steps_table_item_changed)
@@ -1399,6 +1409,118 @@ class AutoClickEditor(QMainWindow):
             pass
         self._update_ui_state()
 
+    def on_record_insert(self):
+        """Record extra steps based on current on-screen anchor basepoint.
+
+        Flow:
+        1) click button -> pending
+        2) press F9
+        3) locate anchor image on current screen
+        4) compute anchor basepoint from click_in_image and start recording
+        New recorded steps are appended to the end; user can reorder later.
+        """
+        if not self._require_flow_selected():
+            return
+        if not self._require_project():
+            return
+
+        f = self._ensure_flow(self.current_flow_id)
+        anch = f.get("anchor")
+        if not isinstance(anch, dict):
+            QMessageBox.warning(self, "需要錨點圖", "請先截取錨點圖並設定錨點基準點")
+            return
+
+        self.pending_action = "record_insert"
+        self._ensure_listeners_running()
+
+        try:
+            self.showMinimized()
+        except Exception:
+            pass
+        self._show_step_log()
+        try:
+            self.step_log.append_line(f"[{now_utc_iso()}] pending: record insert (press F9)")
+        except Exception:
+            pass
+        self._show_message("準備插入錄製，按 F9 後會先定位錨點再開始錄製")
+        self._update_ui_state()
+
+    def _do_record_insert_after_f9(self):
+        if not self.current_flow_id or not self.project_dir:
+            self.pending_action = None
+            return
+
+        f = self._ensure_flow(self.current_flow_id)
+        anch = f.get("anchor")
+        if not isinstance(anch, dict):
+            self.pending_action = None
+            QMessageBox.warning(self, "需要錨點圖", "請先截取錨點圖")
+            return
+
+        anchor_rel = anch.get("image")
+        click_in_image = anch.get("click_in_image")
+        if not isinstance(anchor_rel, str) or not anchor_rel or not isinstance(click_in_image, dict):
+            self.pending_action = None
+            QMessageBox.warning(self, "錨點資料不完整", "anchor.image / anchor.click_in_image 缺失")
+            return
+
+        anchor_path = os.path.join(self.project_dir, anchor_rel)
+        if not os.path.exists(anchor_path):
+            self.pending_action = None
+            QMessageBox.warning(self, "找不到錨點圖", f"{anchor_rel}")
+            return
+
+        if pyautogui is None:
+            self.pending_action = None
+            QMessageBox.warning(self, "缺少 pyautogui", "無法做錨點定位，請先安裝 pyautogui")
+            return
+
+        try:
+            g = self.data.get("global") if isinstance(self.data.get("global"), dict) else {}
+            confidence = float(g.get("confidence", DEFAULT_CONFIDENCE))
+            grayscale = bool(g.get("grayscale", DEFAULT_GRAYSCALE))
+
+            try:
+                box = pyautogui.locateOnScreen(anchor_path, confidence=confidence, grayscale=grayscale)
+            except TypeError:
+                box = pyautogui.locateOnScreen(anchor_path)
+            if box is None:
+                raise RuntimeError("anchor not found")
+
+            ax, ay, aw, ah = int(box.left), int(box.top), int(box.width), int(box.height)
+            ix = int(click_in_image.get("x", 0))
+            iy = int(click_in_image.get("y", 0))
+            px = ax + ix
+            py = ay + iy
+        except Exception as e:
+            self.pending_action = None
+            QMessageBox.warning(self, "定位錨點失敗", f"無法在目前畫面找到錨點，請先切回正確畫面後重試。\n\n{e}")
+            return
+
+        self.anchor_click_xy = {"x": int(px), "y": int(py)}
+        anch["anchor_click_xy"] = {"x": int(px), "y": int(py)}
+
+        self.pending_action = None
+        self.record_insert_mode = True
+        self.recording = True
+        self.paused = False
+
+        try:
+            self.showMinimized()
+        except Exception:
+            pass
+
+        self._show_step_log()
+        try:
+            self.step_log.append_line(
+                f"[{now_utc_iso()}] REC insert start anchor_bbox=({ax},{ay},{aw},{ah}) anchor_click_xy=({int(px)},{int(py)})"
+            )
+        except Exception:
+            pass
+        self._show_message("已定位錨點基準點，開始錄製插入步驟（新步驟會先加在尾端）")
+        self._refresh_steps_table()
+        self._update_ui_state()
+
     def _on_record_calibration_changed(self, _v=None):
         self.record_sx = float(self.spin_record_sx.value())
         self.record_sy = float(self.spin_record_sy.value())
@@ -1480,7 +1602,9 @@ class AutoClickEditor(QMainWindow):
     def on_stop(self):
         self.recording = False
         self.paused = False
+        self.record_insert_mode = False
         self.expect_anchor_click = False
+        self.pending_action = None
         self._show_message("已停止")
         if getattr(self, "chk_step_log", None) and self.chk_step_log.isChecked():
             self.step_log.hide()
@@ -1525,6 +1649,54 @@ class AutoClickEditor(QMainWindow):
         steps.pop(idx)
         self._set_current_steps(steps)
         self._refresh_steps_table()
+
+    def on_move_step_up(self):
+        row = self.steps_table.currentRow()
+        if row < 0:
+            return
+
+        reserved = 0
+        try:
+            f = self._ensure_flow(self.current_flow_id) if self.current_flow_id else None
+            anch = f.get("anchor") if isinstance(f, dict) else None
+            if isinstance(anch, dict):
+                reserved = 2
+        except Exception:
+            reserved = 0
+
+        idx = row - reserved
+        steps = self._current_steps()
+        if idx <= 0 or idx >= len(steps):
+            return
+
+        steps[idx - 1], steps[idx] = steps[idx], steps[idx - 1]
+        self._set_current_steps(steps)
+        self._refresh_steps_table()
+        self.steps_table.setCurrentCell(row - 1, 0)
+
+    def on_move_step_down(self):
+        row = self.steps_table.currentRow()
+        if row < 0:
+            return
+
+        reserved = 0
+        try:
+            f = self._ensure_flow(self.current_flow_id) if self.current_flow_id else None
+            anch = f.get("anchor") if isinstance(f, dict) else None
+            if isinstance(anch, dict):
+                reserved = 2
+        except Exception:
+            reserved = 0
+
+        idx = row - reserved
+        steps = self._current_steps()
+        if idx < 0 or idx >= len(steps) - 1:
+            return
+
+        steps[idx], steps[idx + 1] = steps[idx + 1], steps[idx]
+        self._set_current_steps(steps)
+        self._refresh_steps_table()
+        self.steps_table.setCurrentCell(row + 1, 0)
 
     def on_insert_type(self):
         if not self._require_flow_selected():
@@ -1825,6 +1997,14 @@ class AutoClickEditor(QMainWindow):
             except Exception:
                 pass
             self._do_set_anchor_basepoint_after_f9()
+            return
+        if self.pending_action == "record_insert":
+            try:
+                self._show_step_log()
+                self.step_log.append_line(f"[{now_utc_iso()}] F9 -> record insert")
+            except Exception:
+                pass
+            self._do_record_insert_after_f9()
             return
 
         # Otherwise, F9 toggles pause/resume while recording
@@ -2208,7 +2388,10 @@ class AutoClickEditor(QMainWindow):
 
     def _update_ui_state(self):
         # status
-        if self.expect_anchor_click:
+        if self.pending_action == "record_insert":
+            self.lbl_status.setText("狀態：等待 F9（將先定位錨點後開始插入錄製）")
+            self.lbl_status.setStyleSheet("font-weight: bold; color: #FFA500;")
+        elif self.expect_anchor_click:
             self.lbl_status.setText("狀態：等待設定錨點基準點（請點一下錨點）")
             self.lbl_status.setStyleSheet("font-weight: bold; color: #FFA500;")
         elif self.recording and self.paused:
@@ -2229,7 +2412,8 @@ class AutoClickEditor(QMainWindow):
         self.btn_capture_anchor.setEnabled(bool(has_flow and self.project_dir))
         self.btn_set_anchor_click.setEnabled(bool(has_flow and self.project_dir))
         self.btn_record.setEnabled(bool(has_flow and self.project_dir and self.anchor_click_xy is not None))
-        self.btn_stop.setEnabled(bool(self.recording or self.expect_anchor_click))
+        self.btn_record_insert.setEnabled(bool(has_flow and self.project_dir))
+        self.btn_stop.setEnabled(bool(self.recording or self.expect_anchor_click or self.pending_action == "record_insert"))
 
     def _show_message(self, text: str):
         # lightweight status via window title + optional messagebox (avoid spam)
