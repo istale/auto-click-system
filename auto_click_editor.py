@@ -2190,7 +2190,10 @@ class AutoClickEditor(QMainWindow):
         lx, ly = self._listener_xy_to_logical(x, y)
 
         try:
-            if self.frameGeometry().contains(lx, ly):
+            # When minimized, frameGeometry may still keep previous on-screen rect.
+            # Ignore main-window hit-test while minimized, otherwise clicks in the old
+            # window area would be falsely treated as "our UI" and get dropped.
+            if self.isVisible() and (not self.isMinimized()) and self.frameGeometry().contains(lx, ly):
                 return True
         except Exception:
             pass
