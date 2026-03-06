@@ -608,6 +608,23 @@ class AutoClickEditor(QMainWindow):
         self.flows_table.cellDoubleClicked.connect(self._on_flows_table_double_clicked)
         layout.addWidget(self.flows_table)
 
+        row2 = QHBoxLayout()
+        self.btn_add_flow = QPushButton("新增流程")
+        self.btn_del_flow = QPushButton("刪除流程")
+        self.btn_flow_up = QPushButton("流程上移")
+        self.btn_flow_down = QPushButton("流程下移")
+        row2.addWidget(self.btn_add_flow)
+        row2.addWidget(self.btn_del_flow)
+        row2.addWidget(self.btn_flow_up)
+        row2.addWidget(self.btn_flow_down)
+        row2.addStretch(1)
+        layout.addLayout(row2)
+
+        self.btn_add_flow.clicked.connect(self.on_add_flow)
+        self.btn_del_flow.clicked.connect(self.on_del_flow)
+        self.btn_flow_up.clicked.connect(self.on_flow_up)
+        self.btn_flow_down.clicked.connect(self.on_flow_down)
+
         # Anchor & recording controls
         row3 = QHBoxLayout()
         self.btn_capture_anchor = QPushButton("截取錨點圖")
@@ -1058,6 +1075,30 @@ class AutoClickEditor(QMainWindow):
         self.current_flow_id = None
         self._refresh_flow_list()
         self._refresh_steps_table()
+        self._update_ui_state()
+
+    def on_flow_up(self):
+        row = self.flows_table.currentRow() if hasattr(self, "flows_table") else -1
+        if row <= 0:
+            return
+        flows = self._flows()
+        if row >= len(flows):
+            return
+        flows[row - 1], flows[row] = flows[row], flows[row - 1]
+        self._set_flows(flows)
+        self._refresh_flow_list()
+        self.flows_table.setCurrentCell(row - 1, 0)
+        self._update_ui_state()
+
+    def on_flow_down(self):
+        row = self.flows_table.currentRow() if hasattr(self, "flows_table") else -1
+        flows = self._flows()
+        if row < 0 or row >= len(flows) - 1:
+            return
+        flows[row + 1], flows[row] = flows[row], flows[row + 1]
+        self._set_flows(flows)
+        self._refresh_flow_list()
+        self.flows_table.setCurrentCell(row + 1, 0)
         self._update_ui_state()
 
     def on_rename_flow(self, item):
@@ -2414,6 +2455,14 @@ class AutoClickEditor(QMainWindow):
         self.btn_record.setEnabled(bool(has_flow and self.project_dir and self.anchor_click_xy is not None))
         self.btn_record_insert.setEnabled(bool(has_flow and self.project_dir))
         self.btn_stop.setEnabled(bool(self.recording or self.expect_anchor_click or self.pending_action == "record_insert"))
+
+        # flow order buttons
+        row = self.flows_table.currentRow() if hasattr(self, "flows_table") else -1
+        total = self.flows_table.rowCount() if hasattr(self, "flows_table") else 0
+        if hasattr(self, "btn_flow_up"):
+            self.btn_flow_up.setEnabled(bool(has_flow and row > 0))
+        if hasattr(self, "btn_flow_down"):
+            self.btn_flow_down.setEnabled(bool(has_flow and row >= 0 and row < total - 1))
 
     def _show_message(self, text: str):
         # lightweight status via window title + optional messagebox (avoid spam)
